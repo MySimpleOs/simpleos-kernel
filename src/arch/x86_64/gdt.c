@@ -80,6 +80,10 @@ void tss_set_kernel_stack(uint64_t rsp0) {
     kernel_tss.rsp0 = rsp0;
 }
 
+void gdt_load(void) {
+    gdt_flush(&gdt_desc);
+}
+
 void gdt_init(void) {
     set_entry(&gdt.entries[0], 0x00, 0x00);  /* null                                 */
     set_entry(&gdt.entries[1], 0x9A, 0xA0);  /* kernel code: P DPL0 S code R, L=1    */

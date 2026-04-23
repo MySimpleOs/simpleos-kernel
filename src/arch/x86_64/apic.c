@@ -40,21 +40,26 @@ void lapic_eoi(void) {
     lapic_write(LAPIC_EOI, 0);
 }
 
-void lapic_init(void) {
+void lapic_enable_local(void) {
+    /* Flip the global-enable bit on this CPU's LAPIC, then program the
+     * spurious-vector register and clear TPR. Both MMIO writes hit the
+     * CPU's own LAPIC — the physical address is the same per spec, but
+     * each core sees its local unit. */
     uint64_t base = rdmsr(IA32_APIC_BASE_MSR);
     base |= LAPIC_GLOBAL_ENABLE;
     wrmsr(IA32_APIC_BASE_MSR, base);
 
+    lapic_write(LAPIC_SVR, (1u << 8) | LAPIC_SPURIOUS_VECTOR);
+    lapic_write(LAPIC_TPR, 0);
+}
+
+void lapic_init(void) {
     uint64_t hhdm_offset = hhdm_request.response ? hhdm_request.response->offset : 0;
     uint64_t lapic_virt  = acpi.lapic_phys + hhdm_offset;
     mmio_map(lapic_virt, acpi.lapic_phys, 0x1000);
     lapic_mmio = (volatile uint32_t *) lapic_virt;
 
-    /* Spurious interrupt vector + enable bit. */
-    lapic_write(LAPIC_SVR, (1u << 8) | LAPIC_SPURIOUS_VECTOR);
-
-    /* Task priority 0: accept all interrupt priority classes. */
-    lapic_write(LAPIC_TPR, 0);
+    lapic_enable_local();
 
     uint32_t id      = lapic_read(LAPIC_ID)      >> 24;
     uint32_t version = lapic_read(LAPIC_VERSION) & 0xFF;

@@ -48,6 +48,10 @@ static void idt_set(int vec, void (*handler)(void), uint8_t type_attr) {
     idt[vec].reserved   = 0;
 }
 
+void idt_load(void) {
+    idt_flush(&idt_desc);
+}
+
 void idt_init(void) {
     void (*stubs[48])(void) = {
         isr0,  isr1,  isr2,  isr3,  isr4,  isr5,  isr6,  isr7,

@@ -17,6 +17,7 @@
 #include "arch/x86_64/ioapic.h"
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/serial.h"
+#include "arch/x86_64/smp.h"
 #include "drivers/keyboard.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
@@ -100,21 +101,7 @@ void kmain(void) {
 
     heap_init();
 
-    /* Sanity check: allocate a few blocks, free the middle one, reallocate
-     * a slightly bigger chunk that should land in the coalesced hole. */
-    void *a = kmalloc(100);
-    void *b = kmalloc(1000);
-    void *c = kmalloc(50);
-    kprintf("[heap] test: a=%p b=%p c=%p\n", a, b, c);
-    heap_dump();
-    kfree(b);
-    void *d = kmalloc(500);
-    kprintf("[heap] after kfree(b) + kmalloc(500): d=%p\n", d);
-    heap_dump();
-    kfree(a);
-    kfree(c);
-    kfree(d);
-    heap_dump();
+    smp_init();
 
     kprintf("[boot] enabling interrupts, entering idle\n");
     idle();

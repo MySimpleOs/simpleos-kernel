@@ -24,6 +24,7 @@ enum {
 #define LAPIC_TIMER_VECTOR 0x20
 
 void     lapic_init(void);
+void     lapic_enable_local(void);   /* BSP + APs: enable the current CPU's LAPIC */
 uint32_t lapic_read(uint32_t reg);
 void     lapic_write(uint32_t reg, uint32_t value);
 void     lapic_eoi(void);

@@ -12,4 +12,5 @@ enum {
 };
 
 void gdt_init(void);
+void gdt_load(void);              /* re-lgdt on the current CPU, no TSS load */
 void tss_set_kernel_stack(uint64_t rsp0);
