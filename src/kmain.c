@@ -18,6 +18,7 @@
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/serial.h"
 #include "drivers/keyboard.h"
+#include "mm/pmm.h"
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
 extern volatile uint64_t limine_base_revision[3];
@@ -58,6 +59,7 @@ void kmain(void) {
     gdt_init();
     idt_init();
     pic_disable();
+    pmm_init();
     acpi_init();
     lapic_init();
 
