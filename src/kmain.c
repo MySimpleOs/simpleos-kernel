@@ -20,6 +20,7 @@
 #include "arch/x86_64/smp.h"
 #include "arch/x86_64/syscall.h"
 #include "drivers/keyboard.h"
+#include "fs/initrd.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
 #include "mm/vmm.h"
@@ -167,6 +168,8 @@ void kmain(void) {
     smp_init();
 
     syscall_init();
+
+    initrd_init();
 
     /* Bootstrap the scheduler around the BSP's current context, then spawn
      * two kernel threads. Timer IRQ will preempt us into them once sti
