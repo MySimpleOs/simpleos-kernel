@@ -19,6 +19,7 @@
 #include "arch/x86_64/serial.h"
 #include "arch/x86_64/smp.h"
 #include "arch/x86_64/syscall.h"
+#include "drivers/console.h"
 #include "drivers/keyboard.h"
 #include "fs/initrd.h"
 #include "fs/tar.h"
@@ -86,17 +87,6 @@ static void spawn_user_demo(void) {
             (void *) (USER_STACK_VA + 4096));
 }
 
-static void fill_rect(uint32_t *pixels, size_t stride,
-                      size_t x0, size_t y0,
-                      size_t w,  size_t h,
-                      uint32_t color) {
-    for (size_t y = y0; y < y0 + h; y++) {
-        for (size_t x = x0; x < x0 + w; x++) {
-            pixels[y * stride + x] = color;
-        }
-    }
-}
-
 void kmain(void) {
     serial_init();
     kprintf("\n[boot] SimpleOS kernel online\n");
@@ -126,21 +116,8 @@ void kmain(void) {
             (unsigned) fb->bpp,   (unsigned) fb->pitch,
             fb->address);
 
-    uint32_t *pixels = (uint32_t *) fb->address;
-    size_t stride = (size_t) (fb->pitch / 4);
-    size_t width  = (size_t) fb->width;
-    size_t height = (size_t) fb->height;
-
-    fill_rect(pixels, stride, 0, 0, width, height, 0xff0a1e3c);
-
-    size_t box = 200;
-    if (width > box && height > box) {
-        size_t x0 = (width  - box) / 2;
-        size_t y0 = (height - box) / 2;
-        fill_rect(pixels, stride, x0, y0, box, box, 0xffff5533);
-    }
-
-    kprintf("[boot] framebuffer painted\n");
+    console_init();
+    kprintf("[boot] framebuffer text console online\n");
 
     lapic_timer_init(100);
 

@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "../../drivers/console.h"
 #include "../../drivers/keyboard.h"
 #include "../../fs/vfs.h"
 #include "../../kprintf.h"
@@ -73,9 +74,12 @@ enum {
 
 static int64_t sys_write(int fd, const char *buf, size_t count) {
     if (fd != 1 && fd != 2) return -1;    /* only stdout/stderr for now      */
+    /* Mirror to both the serial log (for remote debugging) and the on-
+     * screen console (for the interactive user). */
     for (size_t i = 0; i < count; i++) {
         kprintf("%c", buf[i]);
     }
+    console_write(buf, count);
     return (int64_t) count;
 }
 
