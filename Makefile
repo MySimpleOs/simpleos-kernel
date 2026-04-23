@@ -19,7 +19,7 @@ OBJS        := $(patsubst $(SRC)/%.c,$(BUILD_DIR)/%.o,$(CSRCS)) \
                $(BUILD_DIR)/userdemo.o
 DEPS        := $(OBJS:.o=.d)
 
-USERDEMO_SRC_BIN := $(ROOT)/build/libc/hello.bin
+USERDEMO_SRC_BIN := $(ROOT)/build/libc/init.bin
 USERDEMO_BIN     := $(BUILD_DIR)/userdemo.bin
 
 CFLAGS      := -std=gnu11 \

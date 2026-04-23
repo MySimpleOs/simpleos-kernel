@@ -19,6 +19,8 @@
 #include "arch/x86_64/serial.h"
 #include "arch/x86_64/smp.h"
 #include "arch/x86_64/syscall.h"
+#include "compositor/compositor.h"
+#include "compositor/surface.h"
 #include "drivers/keyboard.h"
 #include "fs/initrd.h"
 #include "fs/tar.h"
@@ -123,61 +125,39 @@ void kmain(void) {
 
     display_init();
 
-    /* Paint the Faz 3 test pattern onto the current back buffer —
-     * dark-navy background with a red-orange square in the middle — then
-     * present. On the VirtIO-GPU double-buffered path the pattern is
-     * also copied to the second buffer so swaps don't reveal an unpainted
-     * frame. Serial log stays the interactive channel; no on-screen
-     * console any more. */
-    const struct display *dd = display_get();
-    if (dd->pixels) {
-        uint32_t *px    = dd->pixels;
-        uint32_t  w     = dd->width;
-        uint32_t  h     = dd->height;
-        uint32_t  pitch = dd->pitch / 4;
-        for (uint32_t y = 0; y < h; y++) {
-            for (uint32_t x = 0; x < w; x++) px[y * pitch + x] = 0xff0a1e3c;
-        }
-        uint32_t box = 200;
-        if (w > box && h > box) {
-            uint32_t x0 = (w - box) / 2;
-            uint32_t y0 = (h - box) / 2;
-            for (uint32_t y = y0; y < y0 + box; y++) {
-                for (uint32_t x = x0; x < x0 + box; x++) {
-                    px[y * pitch + x] = 0xffff5533;
-                }
-            }
-        }
-        display_present();
-        /* Paint the (now-)back buffer too so a second present has the
-         * same image. One-shot cost; keeps both buffers valid. */
-        if (dd->double_buffered) {
-            dd = display_get();
-            px = dd->pixels;
-            for (uint32_t y = 0; y < h; y++) {
-                for (uint32_t x = 0; x < w; x++) px[y * pitch + x] = 0xff0a1e3c;
-            }
-            if (w > box && h > box) {
-                uint32_t x0 = (w - box) / 2;
-                uint32_t y0 = (h - box) / 2;
-                for (uint32_t y = y0; y < y0 + box; y++) {
-                    for (uint32_t x = x0; x < x0 + box; x++) {
-                        px[y * pitch + x] = 0xffff5533;
-                    }
-                }
-            }
-            display_present();
+    /* Heap up before compositor: surface pixel buffers come from kmalloc.
+     * pmm + active VMM (Limine-installed page tables) are all it needs. */
+    heap_init();
+
+    /* Faz 12.1 demo: three overlapping surfaces on a dark-navy desktop.
+     * No thread yet (Faz 12.2) — we just composite twice so both VirtIO
+     * buffers hold the same frame and swaps don't reveal garbage. */
+    compositor_init();
+    {
+        struct surface *s1 = surface_create("red",   320, 240);
+        struct surface *s2 = surface_create("green", 320, 240);
+        struct surface *s3 = surface_create("blue",  320, 240);
+        if (s1 && s2 && s3) {
+            surface_clear(s1, 0xffe03a3a);   /* opaque red    */
+            surface_clear(s2, 0xcc30c060);   /* 80% alpha green */
+            surface_clear(s3, 0xaa3080ff);   /* 67% alpha blue  */
+            surface_move(s1,  80,  80); surface_set_z(s1, 0);
+            surface_move(s2, 260, 160); surface_set_z(s2, 1);
+            surface_move(s3, 440, 240); surface_set_z(s3, 2);
+            compositor_add(s1);
+            compositor_add(s2);
+            compositor_add(s3);
         }
     }
-    kprintf("[boot] framebuffer test pattern painted\n");
+    compositor_frame(0xff0a1e3c);
+    if (display_get()->double_buffered) compositor_frame(0xff0a1e3c);
+    kprintf("[boot] compositor demo painted (3 surfaces)\n");
 
     lapic_timer_init(100);
 
     ioapic_init();
     keyboard_init();
     ioapic_set_irq(KEYBOARD_GSI, KEYBOARD_VECTOR, 0);
-
-    heap_init();
 
     smp_init();
 
