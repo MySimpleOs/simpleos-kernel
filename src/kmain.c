@@ -21,6 +21,7 @@
 #include "drivers/keyboard.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
+#include "sched/thread.h"
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
 extern volatile uint64_t limine_base_revision[3];
@@ -103,6 +104,42 @@ void kmain(void) {
 
     smp_init();
 
-    kprintf("[boot] enabling interrupts, entering idle\n");
+    /* Bootstrap the scheduler around the BSP's current context, then spawn
+     * two kernel threads that cooperatively yield to each other. */
+    static struct thread bsp_thread;
+    sched_init(&bsp_thread);
+
+    thread_create("thread-A", ({
+        void a_fn(void *_a) {
+            (void) _a;
+            for (int i = 1; i <= 3; i++) {
+                kprintf("[thread-A] tick %d\n", i);
+                thread_yield();
+            }
+        }
+        a_fn;
+    }), NULL);
+
+    thread_create("thread-B", ({
+        void b_fn(void *_a) {
+            (void) _a;
+            for (int i = 1; i <= 3; i++) {
+                kprintf("[thread-B] tick %d\n", i);
+                thread_yield();
+            }
+        }
+        b_fn;
+    }), NULL);
+
+    /* First yield kicks off thread-A; when both finish, control comes back
+     * here and we drop into the idle loop. */
+    thread_yield();
+    thread_yield();
+    thread_yield();
+    thread_yield();
+    thread_yield();
+    thread_yield();
+
+    kprintf("[boot] kernel threads finished, entering idle\n");
     idle();
 }
