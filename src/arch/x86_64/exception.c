@@ -80,14 +80,8 @@ void interrupt_dispatch(struct interrupt_frame *frame) {
 
     if (frame->vector == LAPIC_TIMER_VECTOR) {
         timer_ticks++;
-        if ((timer_ticks % 100) == 0) {
-            kprintf("[timer] %u s\n", (unsigned) (timer_ticks / 100));
-        }
         lapic_eoi();
-        /* Preemption: every tick, hand off to the next runnable thread.
-         * switch_context runs on the interrupted thread's IRQ stack; when
-         * we return from this vector later, isr_common's restore sequence
-         * resumes that thread from exactly where it was interrupted. */
+        /* Preemption: every tick, hand off to the next runnable thread. */
         thread_yield();
         return;
     }

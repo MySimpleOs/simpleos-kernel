@@ -43,23 +43,6 @@ static void idle(void) {
     }
 }
 
-extern volatile uint64_t timer_ticks;
-
-/* Demo thread body: print "tick N" five times, roughly one per second,
- * using the LAPIC timer count as a lazy clock. The thread gets preempted
- * off-CPU continuously between busy-wait iterations. */
-static void thread_tick_demo(void *arg) {
-    char tag = (char) (uintptr_t) arg;
-    uint64_t last = timer_ticks;
-    for (int i = 1; i <= 5; i++) {
-        while (timer_ticks - last < 100) {
-            __asm__ volatile ("pause");
-        }
-        last = timer_ticks;
-        kprintf("[thread-%c] tick %d\n", tag, i);
-    }
-}
-
 #define USER_CODE_VA    0x0000000000400000ULL
 #define USER_STACK_VA   0x000000007ffff000ULL
 #define USER_IMAGE_PAGES 32           /* 128 KiB — fits blob + BSS arena     */
@@ -178,16 +161,13 @@ void kmain(void) {
     }
 
     /* Bootstrap the scheduler around the BSP's current context, then spawn
-     * two kernel threads. Timer IRQ will preempt us into them once sti
-     * happens in idle(). */
+     * the user-space init program (the shell). Timer IRQ will preempt the
+     * BSP into it once sti happens in idle(). */
     static struct thread bsp_thread;
     sched_init(&bsp_thread);
 
-    extern volatile uint64_t timer_ticks;
-    thread_create("thread-A", thread_tick_demo, (void *) (uintptr_t) 'A');
-    thread_create("thread-B", thread_tick_demo, (void *) (uintptr_t) 'B');
     spawn_user_demo();
 
-    kprintf("[sched] ready with 2 kernel threads + 1 user thread, entering idle\n");
+    kprintf("[sched] scheduler ready, handing off to init\n\n");
     idle();
 }
