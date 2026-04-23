@@ -57,62 +57,47 @@ static void thread_tick_demo(void *arg) {
     }
 }
 
-#define USER_CODE_VA  0x0000000000400000ULL
-#define USER_STACK_VA 0x000000007ffff000ULL
-#define USER_MSG_VA   (USER_CODE_VA + 0x800)   /* second half of the code page */
+#define USER_CODE_VA    0x0000000000400000ULL
+#define USER_STACK_VA   0x000000007ffff000ULL
+#define USER_IMAGE_PAGES 32           /* 128 KiB — fits blob + BSS arena     */
 
-/* Assemble a ring-3 test program that does sys_write("Hello from ring 3!\n")
- * followed by sys_exit(0), then spawn a thread that starts at it. */
+/* Supplied by kernel/src/userdemo.S — flat binary of libc/examples/hello
+ * linked to start at 0x400000, ready to run once copied into a user page. */
+extern const uint8_t userdemo_start[];
+extern const uint8_t userdemo_end[];
+
 static void spawn_user_demo(void) {
-    uint64_t code_phys  = pmm_alloc_page();
-    uint64_t stack_phys = pmm_alloc_page();
+    uint64_t blob_size = (uint64_t) (userdemo_end - userdemo_start);
 
-    vmm_map(USER_CODE_VA,  code_phys,  4096, VMM_USER);                /* RX */
-    vmm_map(USER_STACK_VA, stack_phys, 4096, VMM_USER | VMM_W | VMM_NX);
-
+    /* Reserve a fixed USER_IMAGE_PAGES-page window at USER_CODE_VA so the
+     * freshly-allocated BSS region (which lives past the blob bytes) is
+     * also mapped. pmm_alloc_page zeroes frames, so BSS is implicitly
+     * clean even before crt0 runs rep stosb over it. */
     extern volatile struct limine_hhdm_request hhdm_request;
-    uint64_t hhdm  = hhdm_request.response ? hhdm_request.response->offset : 0;
-    uint8_t *code  = (uint8_t *) (code_phys + hhdm);
+    uint64_t hhdm = hhdm_request.response ? hhdm_request.response->offset : 0;
 
-    static const char msg[] = "Hello from ring 3!\n";
-    const uint64_t msg_len = sizeof(msg) - 1;
+    for (uint64_t i = 0; i < USER_IMAGE_PAGES; i++) {
+        uint64_t phys = pmm_alloc_page();
+        vmm_map(USER_CODE_VA + i * 4096, phys, 4096, VMM_USER | VMM_W);
 
-    /* Copy the message into the same user page at +0x800. */
-    for (uint64_t i = 0; i < msg_len; i++) {
-        code[0x800 + i] = (uint8_t) msg[i];
+        uint64_t off = i * 4096;
+        if (off < blob_size) {
+            uint8_t *dst = (uint8_t *) (phys + hhdm);
+            uint64_t cpy = blob_size - off;
+            if (cpy > 4096) cpy = 4096;
+            for (uint64_t b = 0; b < cpy; b++) dst[b] = userdemo_start[off + b];
+        }
     }
 
-    size_t i = 0;
-    /* movabs $1, %rax       — sys_write */
-    code[i++] = 0x48; code[i++] = 0xb8;
-    uint64_t n = 1;       for (int k = 0; k < 8; k++) code[i++] = (n  >> (8*k)) & 0xff;
-    /* movabs $1, %rdi       — fd */
-    code[i++] = 0x48; code[i++] = 0xbf;
-    n = 1;                for (int k = 0; k < 8; k++) code[i++] = (n  >> (8*k)) & 0xff;
-    /* movabs $USER_MSG_VA, %rsi */
-    code[i++] = 0x48; code[i++] = 0xbe;
-    n = USER_MSG_VA;      for (int k = 0; k < 8; k++) code[i++] = (n  >> (8*k)) & 0xff;
-    /* movabs $msg_len, %rdx */
-    code[i++] = 0x48; code[i++] = 0xba;
-    n = msg_len;          for (int k = 0; k < 8; k++) code[i++] = (n  >> (8*k)) & 0xff;
-    /* syscall */
-    code[i++] = 0x0f; code[i++] = 0x05;
-    /* movabs $60, %rax      — sys_exit */
-    code[i++] = 0x48; code[i++] = 0xb8;
-    n = 60;               for (int k = 0; k < 8; k++) code[i++] = (n  >> (8*k)) & 0xff;
-    /* xor %edi, %edi        — exit code 0 */
-    code[i++] = 0x31; code[i++] = 0xff;
-    /* syscall */
-    code[i++] = 0x0f; code[i++] = 0x05;
-    /* Safety net: jmp $ if sys_exit ever returns. */
-    code[i++] = 0xeb; code[i++] = 0xfe;
+    uint64_t stack_phys = pmm_alloc_page();
+    vmm_map(USER_STACK_VA, stack_phys, 4096, VMM_USER | VMM_W | VMM_NX);
 
     thread_create_user("user-demo", USER_CODE_VA, USER_STACK_VA + 4096);
-    kprintf("[user] ring 3 program at rip=%p stack=%p msg=%p len=%u\n",
+    kprintf("[user] ring 3 program: %u bytes blob, %u page image @ %p, stack %p\n",
+            (unsigned) blob_size,
+            (unsigned) USER_IMAGE_PAGES,
             (void *) USER_CODE_VA,
-            (void *) (USER_STACK_VA + 4096),
-            (void *) USER_MSG_VA,
-            (unsigned) msg_len);
+            (void *) (USER_STACK_VA + 4096));
 }
 
 static void fill_rect(uint32_t *pixels, size_t stride,

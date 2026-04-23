@@ -11,10 +11,16 @@ CC          := $(CROSS)gcc
 LD          := $(CROSS)ld
 
 CSRCS       := $(shell find $(SRC) -name '*.c')
-SSRCS       := $(shell find $(SRC) -name '*.S')
+# userdemo.S needs a generated .bin next to it, so exclude from the generic
+# rule and give it its own build step below.
+SSRCS       := $(shell find $(SRC) -name '*.S' ! -name 'userdemo.S')
 OBJS        := $(patsubst $(SRC)/%.c,$(BUILD_DIR)/%.o,$(CSRCS)) \
-               $(patsubst $(SRC)/%.S,$(BUILD_DIR)/%.o,$(SSRCS))
+               $(patsubst $(SRC)/%.S,$(BUILD_DIR)/%.o,$(SSRCS)) \
+               $(BUILD_DIR)/userdemo.o
 DEPS        := $(OBJS:.o=.d)
+
+USERDEMO_SRC_BIN := $(ROOT)/build/libc/hello.bin
+USERDEMO_BIN     := $(BUILD_DIR)/userdemo.bin
 
 CFLAGS      := -std=gnu11 \
                -ffreestanding -fno-stack-protector -fno-stack-check \
@@ -50,6 +56,14 @@ $(BUILD_DIR)/%.o: $(SRC)/%.c | $(BUILD_DIR)/include/limine.h
 $(BUILD_DIR)/%.o: $(SRC)/%.S
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(USERDEMO_BIN): $(USERDEMO_SRC_BIN)
+	@mkdir -p $(dir $@)
+	cp $< $@
+
+$(BUILD_DIR)/userdemo.o: $(SRC)/userdemo.S $(USERDEMO_BIN)
+	@mkdir -p $(dir $@)
+	$(CC) -Wa,-I$(BUILD_DIR) $(CFLAGS) -c $(SRC)/userdemo.S -o $@
 
 $(KERNEL_ELF): $(OBJS) $(CURDIR)/linker.ld
 	@mkdir -p $(dir $@)
