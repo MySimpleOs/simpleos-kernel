@@ -19,7 +19,6 @@
 #include "arch/x86_64/serial.h"
 #include "arch/x86_64/smp.h"
 #include "arch/x86_64/syscall.h"
-#include "drivers/console.h"
 #include "drivers/keyboard.h"
 #include "fs/initrd.h"
 #include "fs/tar.h"
@@ -123,8 +122,54 @@ void kmain(void) {
     gpu_init();
 
     display_init();
-    console_init();
-    kprintf("[boot] framebuffer text console online\n");
+
+    /* Paint the Faz 3 test pattern onto the current back buffer —
+     * dark-navy background with a red-orange square in the middle — then
+     * present. On the VirtIO-GPU double-buffered path the pattern is
+     * also copied to the second buffer so swaps don't reveal an unpainted
+     * frame. Serial log stays the interactive channel; no on-screen
+     * console any more. */
+    const struct display *dd = display_get();
+    if (dd->pixels) {
+        uint32_t *px    = dd->pixels;
+        uint32_t  w     = dd->width;
+        uint32_t  h     = dd->height;
+        uint32_t  pitch = dd->pitch / 4;
+        for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) px[y * pitch + x] = 0xff0a1e3c;
+        }
+        uint32_t box = 200;
+        if (w > box && h > box) {
+            uint32_t x0 = (w - box) / 2;
+            uint32_t y0 = (h - box) / 2;
+            for (uint32_t y = y0; y < y0 + box; y++) {
+                for (uint32_t x = x0; x < x0 + box; x++) {
+                    px[y * pitch + x] = 0xffff5533;
+                }
+            }
+        }
+        display_present();
+        /* Paint the (now-)back buffer too so a second present has the
+         * same image. One-shot cost; keeps both buffers valid. */
+        if (dd->double_buffered) {
+            dd = display_get();
+            px = dd->pixels;
+            for (uint32_t y = 0; y < h; y++) {
+                for (uint32_t x = 0; x < w; x++) px[y * pitch + x] = 0xff0a1e3c;
+            }
+            if (w > box && h > box) {
+                uint32_t x0 = (w - box) / 2;
+                uint32_t y0 = (h - box) / 2;
+                for (uint32_t y = y0; y < y0 + box; y++) {
+                    for (uint32_t x = x0; x < x0 + box; x++) {
+                        px[y * pitch + x] = 0xffff5533;
+                    }
+                }
+            }
+            display_present();
+        }
+    }
+    kprintf("[boot] framebuffer test pattern painted\n");
 
     lapic_timer_init(100);
 

@@ -11,20 +11,28 @@ extern volatile struct limine_framebuffer_request framebuffer_request;
 
 static struct display dsp;
 
-static void limine_present(void) { /* direct framebuffer, nothing to do */ }
-static void virtio_present(void)  { virtio_gpu_present(); }
+static void limine_present(void) {
+    /* Direct framebuffer writes are visible immediately; no host-side
+     * copy needed. Single buffer, no swap. */
+}
+
+static void virtio_present(void) {
+    virtio_gpu_present();
+    /* After present the "back" pointer has swapped — refresh the exposed
+     * pixels field so subsequent display_get() callers draw into the new
+     * back buffer. */
+    dsp.pixels = virtio_gpu_backbuffer();
+}
 
 void display_init(void) {
-    /* Prefer VirtIO-GPU when it's live — kernel owns the scanout and
-     * future compositor effects can use the abstract present(). Fall back
-     * to Limine's linear framebuffer so bring-up never regresses. */
     if (virtio_gpu_ready()) {
-        dsp.pixels  = virtio_gpu_backbuffer();
-        dsp.width   = virtio_gpu_width();
-        dsp.height  = virtio_gpu_height();
-        dsp.pitch   = virtio_gpu_pitch();
-        dsp.present = virtio_present;
-        kprintf("[display] backend=virtio-gpu %ux%u pitch=%u\n",
+        dsp.pixels          = virtio_gpu_backbuffer();
+        dsp.width           = virtio_gpu_width();
+        dsp.height          = virtio_gpu_height();
+        dsp.pitch           = virtio_gpu_pitch();
+        dsp.double_buffered = 1;
+        dsp.present         = virtio_present;
+        kprintf("[display] backend=virtio-gpu %ux%u pitch=%u double-buffered\n",
                 (unsigned) dsp.width, (unsigned) dsp.height, (unsigned) dsp.pitch);
         return;
     }
@@ -33,18 +41,20 @@ void display_init(void) {
         && framebuffer_request.response->framebuffer_count > 0) {
         struct limine_framebuffer *fb =
             framebuffer_request.response->framebuffers[0];
-        dsp.pixels  = (uint32_t *) fb->address;
-        dsp.width   = (uint32_t) fb->width;
-        dsp.height  = (uint32_t) fb->height;
-        dsp.pitch   = (uint32_t) fb->pitch;
-        dsp.present = limine_present;
-        kprintf("[display] backend=limine-fb %ux%u pitch=%u\n",
+        dsp.pixels          = (uint32_t *) fb->address;
+        dsp.width           = (uint32_t) fb->width;
+        dsp.height          = (uint32_t) fb->height;
+        dsp.pitch           = (uint32_t) fb->pitch;
+        dsp.double_buffered = 0;
+        dsp.present         = limine_present;
+        kprintf("[display] backend=limine-fb %ux%u pitch=%u single-buffered\n",
                 (unsigned) dsp.width, (unsigned) dsp.height, (unsigned) dsp.pitch);
         return;
     }
 
-    dsp.pixels  = NULL;
-    dsp.present = limine_present;
+    dsp.pixels          = NULL;
+    dsp.double_buffered = 0;
+    dsp.present         = limine_present;
     kprintf("[display] no backend available\n");
 }
 

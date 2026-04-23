@@ -13,23 +13,25 @@ extern volatile struct limine_hhdm_request hhdm_request;
 
 /* --- VirtIO-GPU command codes --- */
 enum {
-    VIRTIO_GPU_CMD_GET_DISPLAY_INFO       = 0x0100,
-    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D     = 0x0101,
-    VIRTIO_GPU_CMD_SET_SCANOUT            = 0x0103,
-    VIRTIO_GPU_CMD_RESOURCE_FLUSH         = 0x0104,
-    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D    = 0x0105,
-    VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING= 0x0106,
+    VIRTIO_GPU_CMD_GET_DISPLAY_INFO        = 0x0100,
+    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D      = 0x0101,
+    VIRTIO_GPU_CMD_SET_SCANOUT             = 0x0103,
+    VIRTIO_GPU_CMD_RESOURCE_FLUSH          = 0x0104,
+    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D     = 0x0105,
+    VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING = 0x0106,
 
-    VIRTIO_GPU_RESP_OK_NODATA             = 0x1100,
-    VIRTIO_GPU_RESP_OK_DISPLAY_INFO       = 0x1101,
+    VIRTIO_GPU_RESP_OK_NODATA              = 0x1100,
+    VIRTIO_GPU_RESP_OK_DISPLAY_INFO        = 0x1101,
 };
 
 enum {
     VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2,
 };
 
-#define SCANOUT_ID  0
-#define RESOURCE_ID 1
+#define SCANOUT_ID      0
+#define RESOURCE_ID_A   1
+#define RESOURCE_ID_B   2
+#define BUFFER_COUNT    2
 
 struct virtio_gpu_ctrl_hdr {
     uint32_t type;
@@ -104,16 +106,16 @@ static uint32_t       disp_w     = 0;
 static uint32_t       disp_h     = 0;
 static uint32_t       disp_pitch = 0;
 
-/* Backing buffer for the single RGBA resource. pmm gives us pages that are
- * contiguous in HHDM, so we allocate them in one batch and trust the run. */
-static uint64_t       backing_phys = 0;
-static uint64_t       backing_len  = 0;
-static uint32_t      *backing      = NULL;
+/* Two full-screen buffers — ping-pong between front (on scanout) and back
+ * (being drawn). virtio_gpu_backbuffer() returns buffers[back]. */
+static uint32_t      *buffers     [BUFFER_COUNT] = { NULL, NULL };
+static uint64_t       buffer_phys [BUFFER_COUNT] = { 0,    0    };
+static uint64_t       buffer_len                  = 0;
+static uint32_t       resource_ids[BUFFER_COUNT] = { RESOURCE_ID_A, RESOURCE_ID_B };
+static int            back_idx                   = 1;   /* drawing target    */
+static int            front_idx                  = 0;   /* scanout source    */
 
-/* Command buffers live in pmm-allocated pages so we can take their phys
- * address cheaply via HHDM subtraction. Static .bss arrays live in the
- * kernel image — their virt→phys translation requires the kernel address
- * request, which we can avoid entirely by allocating in HHDM land. */
+/* Scratch command + response buffers in HHDM-accessible physical pages. */
 static uint8_t *cmd_buf = NULL;
 static uint8_t *rsp_buf = NULL;
 static uint64_t cmd_phys = 0;
@@ -153,9 +155,6 @@ static int get_display_info(void) {
     if (expect_ok(r->hdr.type, VIRTIO_GPU_RESP_OK_DISPLAY_INFO, "GET_DISPLAY_INFO")) {
         return -1;
     }
-
-    /* Use pmodes[0] as our display. Everything else is multi-monitor
-     * territory, which ROADMAP §4 handles. */
     if (!r->pmodes[0].enabled) {
         kprintf("[virtio-gpu] no enabled displays\n");
         return -1;
@@ -169,12 +168,12 @@ static int get_display_info(void) {
     return 0;
 }
 
-static int resource_create_2d(void) {
+static int resource_create_2d(uint32_t id) {
     struct virtio_gpu_resource_create_2d *req =
         (struct virtio_gpu_resource_create_2d *) cmd_buf;
     for (size_t i = 0; i < sizeof(*req); i++) cmd_buf[i] = 0;
     req->hdr.type     = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
-    req->resource_id  = RESOURCE_ID;
+    req->resource_id  = id;
     req->format       = VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;
     req->width        = disp_w;
     req->height       = disp_h;
@@ -185,41 +184,20 @@ static int resource_create_2d(void) {
     return expect_ok(rsp->type, VIRTIO_GPU_RESP_OK_NODATA, "RESOURCE_CREATE_2D");
 }
 
-static int resource_attach_backing(void) {
-    /* Grab a physically-contiguous block so a single mem_entry describes
-     * the whole backing to the device. The block is HHDM-mapped already,
-     * so the CPU-side pointer is just phys + hhdm. */
-    backing_len = (uint64_t) disp_w * disp_h * 4;
-    backing_len = (backing_len + 4095) & ~4095ull;
-
-    uint64_t pages = backing_len / 4096;
-    backing_phys = pmm_alloc_contig(pages);
-    if (!backing_phys) {
-        kprintf("[virtio-gpu] could not allocate %u contiguous pages for backing\n",
-                (unsigned) pages);
-        return -1;
-    }
-
-    /* Map the same span into HHDM (already there) and keep a virt pointer. */
-    uint64_t hhdm = hhdm_request.response ? hhdm_request.response->offset : 0;
-    backing = (uint32_t *) (backing_phys + hhdm);
-
-    /* Zero the backing. */
-    for (uint64_t i = 0; i < backing_len / 4; i++) backing[i] = 0xFF101820;
-
+static int resource_attach_backing_for(uint32_t id, uint64_t phys, uint64_t len) {
     struct virtio_gpu_resource_attach_backing *req =
         (struct virtio_gpu_resource_attach_backing *) cmd_buf;
     for (size_t i = 0; i < sizeof(*req) + sizeof(struct virtio_gpu_mem_entry); i++) {
         cmd_buf[i] = 0;
     }
     req->hdr.type    = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
-    req->resource_id = RESOURCE_ID;
+    req->resource_id = id;
     req->nr_entries  = 1;
 
     struct virtio_gpu_mem_entry *ent =
         (struct virtio_gpu_mem_entry *) (cmd_buf + sizeof(*req));
-    ent->addr   = backing_phys;
-    ent->length = (uint32_t) backing_len;
+    ent->addr   = phys;
+    ent->length = (uint32_t) len;
 
     submit_two_desc(sizeof(*req) + sizeof(*ent),
                     sizeof(struct virtio_gpu_ctrl_hdr));
@@ -229,7 +207,7 @@ static int resource_attach_backing(void) {
                      "RESOURCE_ATTACH_BACKING");
 }
 
-static int set_scanout(void) {
+static int set_scanout_for(uint32_t id) {
     struct virtio_gpu_set_scanout *req = (struct virtio_gpu_set_scanout *) cmd_buf;
     for (size_t i = 0; i < sizeof(*req); i++) cmd_buf[i] = 0;
     req->hdr.type    = VIRTIO_GPU_CMD_SET_SCANOUT;
@@ -238,7 +216,7 @@ static int set_scanout(void) {
     req->r.width     = disp_w;
     req->r.height    = disp_h;
     req->scanout_id  = SCANOUT_ID;
-    req->resource_id = RESOURCE_ID;
+    req->resource_id = id;
 
     submit_two_desc(sizeof(*req), sizeof(struct virtio_gpu_ctrl_hdr));
 
@@ -246,38 +224,48 @@ static int set_scanout(void) {
     return expect_ok(rsp->type, VIRTIO_GPU_RESP_OK_NODATA, "SET_SCANOUT");
 }
 
-void virtio_gpu_present(void) {
-    if (!ready) return;
-
+static void transfer_for(uint32_t id) {
     struct virtio_gpu_transfer_to_host_2d *xfer =
         (struct virtio_gpu_transfer_to_host_2d *) cmd_buf;
     for (size_t i = 0; i < sizeof(*xfer); i++) cmd_buf[i] = 0;
     xfer->hdr.type    = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
-    xfer->r.x         = 0;
-    xfer->r.y         = 0;
     xfer->r.width     = disp_w;
     xfer->r.height    = disp_h;
-    xfer->offset      = 0;
-    xfer->resource_id = RESOURCE_ID;
+    xfer->resource_id = id;
 
     submit_two_desc(sizeof(*xfer), sizeof(struct virtio_gpu_ctrl_hdr));
+}
 
+static void flush_for(uint32_t id) {
     struct virtio_gpu_resource_flush *flush =
         (struct virtio_gpu_resource_flush *) cmd_buf;
     for (size_t i = 0; i < sizeof(*flush); i++) cmd_buf[i] = 0;
     flush->hdr.type    = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
-    flush->r.x         = 0;
-    flush->r.y         = 0;
     flush->r.width     = disp_w;
     flush->r.height    = disp_h;
-    flush->resource_id = RESOURCE_ID;
+    flush->resource_id = id;
 
     submit_two_desc(sizeof(*flush), sizeof(struct virtio_gpu_ctrl_hdr));
 }
 
+void virtio_gpu_present(void) {
+    if (!ready) return;
+
+    uint32_t back = resource_ids[back_idx];
+
+    /* Push guest backing bytes to the host-side resource, re-point the
+     * scanout at it, then flush to make the new frame visible. */
+    transfer_for(back);
+    set_scanout_for(back);
+    flush_for(back);
+
+    /* Previous front is now up for the next draw; swap roles. */
+    int tmp   = front_idx;
+    front_idx = back_idx;
+    back_idx  = tmp;
+}
+
 int virtio_gpu_init(struct pci_device *pci) {
-    /* Allocate scratch command + response buffers in HHDM-accessible
-     * physical pages before any submit_two_desc call. */
     uint64_t hhdm = hhdm_request.response ? hhdm_request.response->offset : 0;
     cmd_phys = pmm_alloc_page();
     rsp_phys = pmm_alloc_page();
@@ -290,22 +278,47 @@ int virtio_gpu_init(struct pci_device *pci) {
     if (virtio_queue_setup(&dev, 0) != 0)   return -1;
     virtio_set_status(&dev, VIRTIO_STATUS_DRIVER_OK);
 
-    if (get_display_info()       != 0) return -1;
-    if (resource_create_2d()     != 0) return -1;
-    if (resource_attach_backing()!= 0) return -1;
-    if (set_scanout()            != 0) return -1;
+    if (get_display_info()      != 0) return -1;
+
+    /* Allocate both full-screen backings and create matching resources. */
+    buffer_len = (uint64_t) disp_w * disp_h * 4;
+    buffer_len = (buffer_len + 4095) & ~4095ull;
+    uint64_t pages = buffer_len / 4096;
+
+    for (int i = 0; i < BUFFER_COUNT; i++) {
+        buffer_phys[i] = pmm_alloc_contig(pages);
+        if (!buffer_phys[i]) {
+            kprintf("[virtio-gpu] could not allocate %u contiguous pages for buffer %d\n",
+                    (unsigned) pages, i);
+            return -1;
+        }
+        buffers[i] = (uint32_t *) (buffer_phys[i] + hhdm);
+        if (resource_create_2d(resource_ids[i]) != 0) return -1;
+        if (resource_attach_backing_for(resource_ids[i],
+                                        buffer_phys[i], buffer_len) != 0) {
+            return -1;
+        }
+    }
+
+    /* Start with buffer 0 as the scanout — the other is the initial back. */
+    front_idx = 0;
+    back_idx  = 1;
+    if (set_scanout_for(resource_ids[front_idx]) != 0) return -1;
 
     ready = 1;
-    virtio_gpu_present();
-    kprintf("[virtio-gpu] ready: %ux%u @ backing %p (%u KiB)\n",
+    kprintf("[virtio-gpu] ready: %ux%u, double-buffered (2x %u KiB), "
+            "front=res%u back=res%u\n",
             (unsigned) disp_w, (unsigned) disp_h,
-            (void *) backing,
-            (unsigned) (backing_len / 1024));
+            (unsigned) (buffer_len / 1024),
+            (unsigned) resource_ids[front_idx],
+            (unsigned) resource_ids[back_idx]);
     return 0;
 }
 
 int       virtio_gpu_ready (void) { return ready; }
-uint32_t *virtio_gpu_backbuffer(void) { return backing; }
+uint32_t *virtio_gpu_backbuffer(void) {
+    return ready ? buffers[back_idx] : NULL;
+}
 uint32_t  virtio_gpu_width (void) { return disp_w; }
 uint32_t  virtio_gpu_height(void) { return disp_h; }
 uint32_t  virtio_gpu_pitch (void) { return disp_pitch; }
