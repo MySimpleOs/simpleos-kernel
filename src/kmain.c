@@ -24,6 +24,8 @@
 #include "fs/initrd.h"
 #include "fs/tar.h"
 #include "fs/vfs.h"
+#include "gpu/gpu.h"
+#include "pci/pci.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
 #include "mm/vmm.h"
@@ -118,6 +120,9 @@ void kmain(void) {
 
     console_init();
     kprintf("[boot] framebuffer text console online\n");
+
+    pci_init();
+    gpu_init();
 
     lapic_timer_init(100);
 
