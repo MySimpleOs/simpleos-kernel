@@ -21,6 +21,7 @@
 #include "drivers/keyboard.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
+#include "mm/vmm.h"
 #include "sched/thread.h"
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
@@ -53,6 +54,40 @@ static void thread_tick_demo(void *arg) {
         last = timer_ticks;
         kprintf("[thread-%c] tick %d\n", tag, i);
     }
+}
+
+#define USER_CODE_VA  0x0000000000400000ULL
+#define USER_STACK_VA 0x000000007ffff000ULL
+
+/* Spawn a minimal ring-3 thread so we can watch a breakpoint fire at CPL=3.
+ *
+ * The user code page holds three bytes —
+ *   cc      int3           ; trap to kernel, handler logs the cs=0x1b proof
+ *   eb fe   jmp self       ; infinite loop after the return from int3
+ * — padded to a page. int3 handler's iretq resumes the user thread at the
+ * jmp, which then spins until the timer preempts it. That lets the log
+ * show one breakpoint event followed by normal timer + scheduler activity
+ * (because the kernel idle / other threads keep progressing while the
+ * user thread lives in its jmp loop). */
+static void spawn_user_demo(void) {
+    uint64_t code_phys  = pmm_alloc_page();
+    uint64_t stack_phys = pmm_alloc_page();
+
+    vmm_map(USER_CODE_VA,  code_phys,  4096, VMM_USER);           /* RX, no W */
+    vmm_map(USER_STACK_VA, stack_phys, 4096, VMM_USER | VMM_W | VMM_NX);
+
+    /* Code bytes at virt 0x400000 via HHDM — vmm_map only added a user PTE,
+     * it did not disturb Limine's kernel-side HHDM mapping of code_phys. */
+    extern volatile struct limine_hhdm_request hhdm_request;
+    uint64_t hhdm = hhdm_request.response ? hhdm_request.response->offset : 0;
+    uint8_t *code = (uint8_t *) (code_phys + hhdm);
+    code[0] = 0xcc;        /* int3 */
+    code[1] = 0xeb;        /* jmp rel8 */
+    code[2] = 0xfe;        /* -2 — jumps back to itself forever */
+
+    thread_create_user("user-demo", USER_CODE_VA, USER_STACK_VA + 4096);
+    kprintf("[user] thread ready at user rip=%p stack=%p\n",
+            (void *) USER_CODE_VA, (void *) (USER_STACK_VA + 4096));
 }
 
 static void fill_rect(uint32_t *pixels, size_t stride,
@@ -130,7 +165,8 @@ void kmain(void) {
     extern volatile uint64_t timer_ticks;
     thread_create("thread-A", thread_tick_demo, (void *) (uintptr_t) 'A');
     thread_create("thread-B", thread_tick_demo, (void *) (uintptr_t) 'B');
+    spawn_user_demo();
 
-    kprintf("[sched] ready with 2 kernel threads, entering idle\n");
+    kprintf("[sched] ready with 2 kernel threads + 1 user thread, entering idle\n");
     idle();
 }

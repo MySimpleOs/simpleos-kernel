@@ -62,8 +62,10 @@ void idt_init(void) {
         isr40, isr41, isr42, isr43, isr44, isr45, isr46, isr47,
     };
     for (int i = 0; i < 48; i++) {
-        /* 0x8E: present | DPL=0 | 64-bit interrupt gate */
-        idt_set(i, stubs[i], 0x8E);
+        /* Default: DPL=0 (ring-3 cannot raise via int N). The breakpoint
+         * vector needs DPL=3 so user-mode debuggers can still trap. */
+        uint8_t type = (i == 3) ? 0xEE : 0x8E;
+        idt_set(i, stubs[i], type);
     }
 
     idt_desc.limit = sizeof(idt) - 1;

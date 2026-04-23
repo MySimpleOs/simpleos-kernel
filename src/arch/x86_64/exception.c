@@ -62,8 +62,11 @@ void interrupt_dispatch(struct interrupt_frame *frame) {
         /* Breakpoint is the only exception we want to survive for now.
          * Print a short diagnostic and return; all others are fatal. */
         if (frame->vector == 3) {
-            kprintf("[exc] breakpoint at %p  (vec=3)  rflags=%p\n",
-                    (void *) frame->rip, (void *) frame->rflags);
+            kprintf("[exc] breakpoint at %p  cs=0x%x  (ring %u)  rflags=%p\n",
+                    (void *) frame->rip,
+                    (unsigned) frame->cs,
+                    (unsigned) (frame->cs & 3),
+                    (void *) frame->rflags);
             return;
         }
 
