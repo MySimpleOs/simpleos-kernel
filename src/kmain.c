@@ -24,6 +24,7 @@
 #include "fs/initrd.h"
 #include "fs/tar.h"
 #include "fs/vfs.h"
+#include "gpu/display.h"
 #include "gpu/gpu.h"
 #include "pci/pci.h"
 #include "mm/heap.h"
@@ -118,11 +119,12 @@ void kmain(void) {
             (unsigned) fb->bpp,   (unsigned) fb->pitch,
             fb->address);
 
-    console_init();
-    kprintf("[boot] framebuffer text console online\n");
-
     pci_init();
     gpu_init();
+
+    display_init();
+    console_init();
+    kprintf("[boot] framebuffer text console online\n");
 
     lapic_timer_init(100);
 

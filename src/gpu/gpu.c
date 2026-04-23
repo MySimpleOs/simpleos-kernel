@@ -1,4 +1,6 @@
 #include "gpu.h"
+#include "virtio_gpu.h"
+
 #include "../kprintf.h"
 #include "../pci/pci.h"
 
@@ -56,7 +58,10 @@ static void log_display(struct pci_device *d) {
             break;
         case VENDOR_REDHAT:
             if (d->device_id == DEVICE_VIRTIO_GPU_MODERN) {
-                kprintf("       VirtIO-GPU — primary driver target\n");
+                kprintf("       VirtIO-GPU — bringing up driver\n");
+                if (virtio_gpu_init(d) != 0) {
+                    kprintf("       VirtIO-GPU init failed; staying on limine-fb\n");
+                }
             }
             break;
         default:

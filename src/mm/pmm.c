@@ -122,6 +122,32 @@ uint64_t pmm_alloc_page(void) {
     panic("pmm: out of physical memory");
 }
 
+uint64_t pmm_alloc_contig(uint64_t n_pages) {
+    if (n_pages == 0) return 0;
+    if (n_pages > total_pages) return 0;
+
+    for (uint64_t start = 0; start + n_pages <= total_pages; ) {
+        int run_ok = 1;
+        uint64_t i;
+        for (i = 0; i < n_pages; i++) {
+            if (bit_get(start + i)) { run_ok = 0; break; }
+        }
+        if (!run_ok) {
+            start += i + 1;           /* skip past the used bit              */
+            continue;
+        }
+        for (uint64_t j = 0; j < n_pages; j++) {
+            bit_set(start + j);
+        }
+        used_pages += n_pages;
+        uint64_t phys = start * PMM_PAGE_SIZE;
+        uint8_t *v = (uint8_t *) (phys + hhdm_off());
+        for (uint64_t b = 0; b < n_pages * PMM_PAGE_SIZE; b++) v[b] = 0;
+        return phys;
+    }
+    return 0;
+}
+
 void pmm_free_page(uint64_t phys) {
     uint64_t idx = phys / PMM_PAGE_SIZE;
     if (idx >= total_pages) return;
