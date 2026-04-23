@@ -32,11 +32,17 @@ static const char *exc_name(uint64_t v) {
     return (v < 32 && names[v]) ? names[v] : "unknown";
 }
 
+static uint64_t read_cr2(void) {
+    uint64_t v;
+    __asm__ volatile ("mov %%cr2, %0" : "=r"(v));
+    return v;
+}
+
 static void dump_frame(struct interrupt_frame *f) {
     kprintf("  rip=%p  cs=%x  rflags=%p\n",
             (void *) f->rip, (unsigned) f->cs, (void *) f->rflags);
-    kprintf("  rsp=%p  ss=%x\n",
-            (void *) f->rsp, (unsigned) f->ss);
+    kprintf("  rsp=%p  ss=%x  cr2=%p\n",
+            (void *) f->rsp, (unsigned) f->ss, (void *) read_cr2());
     kprintf("  rax=%p  rbx=%p  rcx=%p  rdx=%p\n",
             (void *) f->rax, (void *) f->rbx, (void *) f->rcx, (void *) f->rdx);
     kprintf("  rsi=%p  rdi=%p  rbp=%p\n",

@@ -10,8 +10,11 @@
 #include <limine.h>
 
 #include "kprintf.h"
+#include "arch/x86_64/acpi.h"
+#include "arch/x86_64/apic.h"
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/idt.h"
+#include "arch/x86_64/pic.h"
 #include "arch/x86_64/serial.h"
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
@@ -46,6 +49,9 @@ void kmain(void) {
 
     gdt_init();
     idt_init();
+    pic_disable();
+    acpi_init();
+    lapic_init();
 
     if (framebuffer_request.response == NULL
         || framebuffer_request.response->framebuffer_count < 1) {
