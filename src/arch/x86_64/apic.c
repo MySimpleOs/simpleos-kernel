@@ -8,6 +8,8 @@
 #include <stdint.h>
 
 volatile uint64_t timer_ticks = 0;
+volatile uint32_t timer_hz    = 0;
+volatile uint64_t tsc_hz      = 0;
 
 #define IA32_APIC_BASE_MSR 0x1B
 #define LAPIC_GLOBAL_ENABLE (1u << 11)
@@ -72,14 +74,17 @@ void lapic_timer_init(uint32_t hz) {
     lapic_write(LAPIC_TIMER_DIV, 0x3);
 
     /* Kick off a 10 ms PIT oneshot and let the LAPIC timer tick down from
-     * 0xFFFFFFFF in the meantime — the delta tells us ticks/10 ms. */
+     * 0xFFFFFFFF in the meantime — the delta tells us ticks/10 ms. TSC is
+     * latched on both sides of the same window to derive tsc_hz. */
     uint16_t pit_ticks = (uint16_t) (PIT_FREQUENCY / 100);
     pit_prepare_oneshot(pit_ticks);
+    uint64_t tsc_start = rdtsc();
     lapic_write(LAPIC_TIMER_INITCNT, 0xFFFFFFFF);
 
     while (!pit_oneshot_done()) {
         __asm__ volatile ("pause");
     }
+    uint64_t tsc_end   = rdtsc();
 
     uint32_t remaining = lapic_read(LAPIC_TIMER_CURCNT);
     uint32_t consumed  = 0xFFFFFFFF - remaining;
@@ -90,6 +95,11 @@ void lapic_timer_init(uint32_t hz) {
     lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | (1u << 17));
     lapic_write(LAPIC_TIMER_INITCNT, count);
 
+    timer_hz = hz;
+    tsc_hz   = (tsc_end - tsc_start) * 100ull;   /* 10ms -> 1s             */
+
     kprintf("[lapic] timer: %u ticks/10ms, periodic @ %u Hz (count=%u)\n",
             (unsigned) consumed, (unsigned) hz, (unsigned) count);
+    kprintf("[lapic] tsc=%u MHz (calibrated over 10 ms PIT window)\n",
+            (unsigned) (tsc_hz / 1000000ull));
 }

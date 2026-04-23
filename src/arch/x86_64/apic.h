@@ -30,8 +30,23 @@ void     lapic_write(uint32_t reg, uint32_t value);
 void     lapic_eoi(void);
 
 /* Calibrate against the PIT, then program the LAPIC timer in periodic mode
- * firing at `hz` Hz on vector LAPIC_TIMER_VECTOR. */
+ * firing at `hz` Hz on vector LAPIC_TIMER_VECTOR. The same calibration
+ * window is reused to latch TSC frequency in Hz (see tsc_hz below). */
 void lapic_timer_init(uint32_t hz);
 
 /* Monotonically increasing counter updated by the LAPIC timer handler. */
 extern volatile uint64_t timer_ticks;
+
+/* Timer frequency (ticks per second) actually programmed by the most
+ * recent lapic_timer_init. Compositor uses this to compute ticks/frame. */
+extern volatile uint32_t timer_hz;
+
+/* Invariant TSC frequency in Hz, measured against the PIT inside
+ * lapic_timer_init. Zero before init. Precision is ~1%. */
+extern volatile uint64_t tsc_hz;
+
+static inline uint64_t rdtsc(void) {
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t) hi << 32) | lo;
+}

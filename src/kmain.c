@@ -149,11 +149,13 @@ void kmain(void) {
             compositor_add(s3);
         }
     }
-    compositor_frame(0xff0a1e3c);
-    if (display_get()->double_buffered) compositor_frame(0xff0a1e3c);
+    compositor_frame(COMPOSITOR_DEFAULT_BG);
+    if (display_get()->double_buffered) compositor_frame(COMPOSITOR_DEFAULT_BG);
     kprintf("[boot] compositor demo painted (3 surfaces)\n");
 
-    lapic_timer_init(100);
+    /* 1200 Hz gives 10 timer ticks per 120 Hz compositor frame, exactly.
+     * Also tightens scheduler preemption granularity for UI responsiveness. */
+    lapic_timer_init(1200);
 
     ioapic_init();
     keyboard_init();
@@ -174,6 +176,8 @@ void kmain(void) {
      * BSP into it once sti happens in idle(). */
     static struct thread bsp_thread;
     sched_init(&bsp_thread);
+
+    compositor_start(COMPOSITOR_DEFAULT_BG, 120);
 
     spawn_user_demo();
 

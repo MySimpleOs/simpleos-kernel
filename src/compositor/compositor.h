@@ -30,3 +30,22 @@ void compositor_lower(struct surface *s);
  * order (low → high), and present. Safe to call without any surfaces —
  * produces a solid-colour frame. */
 void compositor_frame(uint32_t bg_xrgb);
+
+/* Spawn a dedicated kernel thread that calls compositor_frame(bg) at
+ * `target_hz` Hz. Paces itself against timer_ticks (see apic.h). Starts
+ * immediately; safe to call after sched_init. */
+#define COMPOSITOR_DEFAULT_BG 0xff0a1e3c   /* dark navy desktop            */
+void compositor_start(uint32_t bg_xrgb, uint32_t target_hz);
+
+/* Frame-time statistics collected by the compositor thread. Values are
+ * in microseconds (derived from TSC) and reset between reads. `drops` is
+ * the count of frames skipped because the previous frame ran long enough
+ * to miss its slot. */
+struct compositor_stats {
+    uint64_t frame_count;
+    uint32_t last_us;
+    uint32_t avg_us;
+    uint32_t max_us;
+    uint32_t drops;
+};
+void compositor_get_stats(struct compositor_stats *out);
