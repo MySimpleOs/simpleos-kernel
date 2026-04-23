@@ -26,8 +26,15 @@ extern void switch_context(uint64_t *old_rsp, uint64_t new_rsp);
 struct thread *thread_create(const char *name, void (*fn)(void *), void *arg);
 
 /* Cooperative yield: hand control to the next runnable thread. Safe to call
- * from inside a thread body; does nothing if no other thread is ready. */
+ * from inside a thread body; does nothing if no other thread is ready.
+ * Also safe to invoke from the timer IRQ handler so it doubles as the
+ * preemption entry point. */
 void thread_yield(void);
+
+/* Remove the current thread from the run queue and switch away forever.
+ * Stack and thread struct are leaked for now — a reaper comes with ring 3. */
+__attribute__((noreturn))
+void thread_exit(void);
 
 /* Install an initial scheduler state rooted at `bootstrap` (the BSP's
  * "thread 0"). Must be called once, from kmain, before thread_yield. */

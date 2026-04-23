@@ -30,10 +30,15 @@ static void copy_name(char *dst, const char *src) {
  * When it returns, park the thread in a hlt loop — thread exit is a Faz
  * 7.2/7.4 feature. */
 static void thread_trampoline(void) {
+    /* We land here via switch_context's retq, which never touches rflags.
+     * If the switch was driven from an IRQ handler (the usual case for
+     * preemption), interrupts are still disabled. Re-enable so the new
+     * thread can itself be preempted. */
+    __asm__ volatile ("sti");
+
     struct thread *t = thread_current();
     if (t->fn) t->fn(t->arg);
-    kprintf("[thread:%u] \"%s\" returned — parking\n", t->id, t->name);
-    for (;;) { __asm__ volatile ("hlt"); }
+    thread_exit();
 }
 
 struct thread *thread_create(const char *name, void (*fn)(void *), void *arg) {
@@ -97,4 +102,28 @@ void thread_yield(void) {
     struct thread *next = prev->next;
     current = next;
     switch_context(&prev->rsp, next->rsp);
+}
+
+void thread_exit(void) {
+    struct thread *me = current;
+    if (!me) panic("thread_exit: no current");
+
+    /* Unlink from the circular run queue. */
+    struct thread *prev = me;
+    while (prev->next != me) prev = prev->next;
+    prev->next = me->next;
+
+    kprintf("[sched] thread:%u \"%s\" exited\n", me->id, me->name);
+
+    /* Hand off to the remaining queue. We still call switch_context so
+     * register state is consistent — the saved state on our own stack is
+     * unreferenced afterward since we never run again. */
+    struct thread *next = me->next;
+    current = next;
+    uint64_t dead_rsp;
+    switch_context(&dead_rsp, next->rsp);
+    (void) dead_rsp;
+
+    /* Unreachable — but keep the compiler happy about noreturn. */
+    for (;;) { __asm__ volatile ("cli; hlt"); }
 }

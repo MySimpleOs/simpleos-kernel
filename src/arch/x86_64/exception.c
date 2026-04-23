@@ -3,6 +3,7 @@
 #include "../../drivers/keyboard.h"
 #include "../../kprintf.h"
 #include "../../panic.h"
+#include "../../sched/thread.h"
 
 #include <stdint.h>
 
@@ -80,6 +81,11 @@ void interrupt_dispatch(struct interrupt_frame *frame) {
             kprintf("[timer] %u s\n", (unsigned) (timer_ticks / 100));
         }
         lapic_eoi();
+        /* Preemption: every tick, hand off to the next runnable thread.
+         * switch_context runs on the interrupted thread's IRQ stack; when
+         * we return from this vector later, isr_common's restore sequence
+         * resumes that thread from exactly where it was interrupted. */
+        thread_yield();
         return;
     }
 

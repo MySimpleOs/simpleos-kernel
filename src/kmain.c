@@ -38,6 +38,23 @@ static void idle(void) {
     }
 }
 
+extern volatile uint64_t timer_ticks;
+
+/* Demo thread body: print "tick N" five times, roughly one per second,
+ * using the LAPIC timer count as a lazy clock. The thread gets preempted
+ * off-CPU continuously between busy-wait iterations. */
+static void thread_tick_demo(void *arg) {
+    char tag = (char) (uintptr_t) arg;
+    uint64_t last = timer_ticks;
+    for (int i = 1; i <= 5; i++) {
+        while (timer_ticks - last < 100) {
+            __asm__ volatile ("pause");
+        }
+        last = timer_ticks;
+        kprintf("[thread-%c] tick %d\n", tag, i);
+    }
+}
+
 static void fill_rect(uint32_t *pixels, size_t stride,
                       size_t x0, size_t y0,
                       size_t w,  size_t h,
@@ -105,41 +122,15 @@ void kmain(void) {
     smp_init();
 
     /* Bootstrap the scheduler around the BSP's current context, then spawn
-     * two kernel threads that cooperatively yield to each other. */
+     * two kernel threads. Timer IRQ will preempt us into them once sti
+     * happens in idle(). */
     static struct thread bsp_thread;
     sched_init(&bsp_thread);
 
-    thread_create("thread-A", ({
-        void a_fn(void *_a) {
-            (void) _a;
-            for (int i = 1; i <= 3; i++) {
-                kprintf("[thread-A] tick %d\n", i);
-                thread_yield();
-            }
-        }
-        a_fn;
-    }), NULL);
+    extern volatile uint64_t timer_ticks;
+    thread_create("thread-A", thread_tick_demo, (void *) (uintptr_t) 'A');
+    thread_create("thread-B", thread_tick_demo, (void *) (uintptr_t) 'B');
 
-    thread_create("thread-B", ({
-        void b_fn(void *_a) {
-            (void) _a;
-            for (int i = 1; i <= 3; i++) {
-                kprintf("[thread-B] tick %d\n", i);
-                thread_yield();
-            }
-        }
-        b_fn;
-    }), NULL);
-
-    /* First yield kicks off thread-A; when both finish, control comes back
-     * here and we drop into the idle loop. */
-    thread_yield();
-    thread_yield();
-    thread_yield();
-    thread_yield();
-    thread_yield();
-    thread_yield();
-
-    kprintf("[boot] kernel threads finished, entering idle\n");
+    kprintf("[sched] ready with 2 kernel threads, entering idle\n");
     idle();
 }
