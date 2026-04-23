@@ -11,7 +11,9 @@ CC          := $(CROSS)gcc
 LD          := $(CROSS)ld
 
 CSRCS       := $(shell find $(SRC) -name '*.c')
-OBJS        := $(patsubst $(SRC)/%.c,$(BUILD_DIR)/%.o,$(CSRCS))
+SSRCS       := $(shell find $(SRC) -name '*.S')
+OBJS        := $(patsubst $(SRC)/%.c,$(BUILD_DIR)/%.o,$(CSRCS)) \
+               $(patsubst $(SRC)/%.S,$(BUILD_DIR)/%.o,$(SSRCS))
 DEPS        := $(OBJS:.o=.d)
 
 CFLAGS      := -std=gnu11 \
@@ -42,6 +44,10 @@ $(BUILD_DIR)/include/limine.h: $(LIMINE_H)
 	cp $< $@
 
 $(BUILD_DIR)/%.o: $(SRC)/%.c | $(BUILD_DIR)/include/limine.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: $(SRC)/%.S
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

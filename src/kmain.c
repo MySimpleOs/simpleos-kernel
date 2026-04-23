@@ -10,6 +10,7 @@
 #include <limine.h>
 
 #include "kprintf.h"
+#include "arch/x86_64/gdt.h"
 #include "arch/x86_64/serial.h"
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
@@ -41,6 +42,8 @@ void kmain(void) {
         hang();
     }
     kprintf("[boot] limine base revision 3 accepted\n");
+
+    gdt_init();
 
     if (framebuffer_request.response == NULL
         || framebuffer_request.response->framebuffer_count < 1) {
