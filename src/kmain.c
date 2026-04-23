@@ -18,6 +18,7 @@
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/serial.h"
 #include "arch/x86_64/smp.h"
+#include "arch/x86_64/syscall.h"
 #include "drivers/keyboard.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
@@ -58,36 +59,60 @@ static void thread_tick_demo(void *arg) {
 
 #define USER_CODE_VA  0x0000000000400000ULL
 #define USER_STACK_VA 0x000000007ffff000ULL
+#define USER_MSG_VA   (USER_CODE_VA + 0x800)   /* second half of the code page */
 
-/* Spawn a minimal ring-3 thread so we can watch a breakpoint fire at CPL=3.
- *
- * The user code page holds three bytes —
- *   cc      int3           ; trap to kernel, handler logs the cs=0x1b proof
- *   eb fe   jmp self       ; infinite loop after the return from int3
- * — padded to a page. int3 handler's iretq resumes the user thread at the
- * jmp, which then spins until the timer preempts it. That lets the log
- * show one breakpoint event followed by normal timer + scheduler activity
- * (because the kernel idle / other threads keep progressing while the
- * user thread lives in its jmp loop). */
+/* Assemble a ring-3 test program that does sys_write("Hello from ring 3!\n")
+ * followed by sys_exit(0), then spawn a thread that starts at it. */
 static void spawn_user_demo(void) {
     uint64_t code_phys  = pmm_alloc_page();
     uint64_t stack_phys = pmm_alloc_page();
 
-    vmm_map(USER_CODE_VA,  code_phys,  4096, VMM_USER);           /* RX, no W */
+    vmm_map(USER_CODE_VA,  code_phys,  4096, VMM_USER);                /* RX */
     vmm_map(USER_STACK_VA, stack_phys, 4096, VMM_USER | VMM_W | VMM_NX);
 
-    /* Code bytes at virt 0x400000 via HHDM — vmm_map only added a user PTE,
-     * it did not disturb Limine's kernel-side HHDM mapping of code_phys. */
     extern volatile struct limine_hhdm_request hhdm_request;
-    uint64_t hhdm = hhdm_request.response ? hhdm_request.response->offset : 0;
-    uint8_t *code = (uint8_t *) (code_phys + hhdm);
-    code[0] = 0xcc;        /* int3 */
-    code[1] = 0xeb;        /* jmp rel8 */
-    code[2] = 0xfe;        /* -2 — jumps back to itself forever */
+    uint64_t hhdm  = hhdm_request.response ? hhdm_request.response->offset : 0;
+    uint8_t *code  = (uint8_t *) (code_phys + hhdm);
+
+    static const char msg[] = "Hello from ring 3!\n";
+    const uint64_t msg_len = sizeof(msg) - 1;
+
+    /* Copy the message into the same user page at +0x800. */
+    for (uint64_t i = 0; i < msg_len; i++) {
+        code[0x800 + i] = (uint8_t) msg[i];
+    }
+
+    size_t i = 0;
+    /* movabs $1, %rax       — sys_write */
+    code[i++] = 0x48; code[i++] = 0xb8;
+    uint64_t n = 1;       for (int k = 0; k < 8; k++) code[i++] = (n  >> (8*k)) & 0xff;
+    /* movabs $1, %rdi       — fd */
+    code[i++] = 0x48; code[i++] = 0xbf;
+    n = 1;                for (int k = 0; k < 8; k++) code[i++] = (n  >> (8*k)) & 0xff;
+    /* movabs $USER_MSG_VA, %rsi */
+    code[i++] = 0x48; code[i++] = 0xbe;
+    n = USER_MSG_VA;      for (int k = 0; k < 8; k++) code[i++] = (n  >> (8*k)) & 0xff;
+    /* movabs $msg_len, %rdx */
+    code[i++] = 0x48; code[i++] = 0xba;
+    n = msg_len;          for (int k = 0; k < 8; k++) code[i++] = (n  >> (8*k)) & 0xff;
+    /* syscall */
+    code[i++] = 0x0f; code[i++] = 0x05;
+    /* movabs $60, %rax      — sys_exit */
+    code[i++] = 0x48; code[i++] = 0xb8;
+    n = 60;               for (int k = 0; k < 8; k++) code[i++] = (n  >> (8*k)) & 0xff;
+    /* xor %edi, %edi        — exit code 0 */
+    code[i++] = 0x31; code[i++] = 0xff;
+    /* syscall */
+    code[i++] = 0x0f; code[i++] = 0x05;
+    /* Safety net: jmp $ if sys_exit ever returns. */
+    code[i++] = 0xeb; code[i++] = 0xfe;
 
     thread_create_user("user-demo", USER_CODE_VA, USER_STACK_VA + 4096);
-    kprintf("[user] thread ready at user rip=%p stack=%p\n",
-            (void *) USER_CODE_VA, (void *) (USER_STACK_VA + 4096));
+    kprintf("[user] ring 3 program at rip=%p stack=%p msg=%p len=%u\n",
+            (void *) USER_CODE_VA,
+            (void *) (USER_STACK_VA + 4096),
+            (void *) USER_MSG_VA,
+            (unsigned) msg_len);
 }
 
 static void fill_rect(uint32_t *pixels, size_t stride,
@@ -155,6 +180,8 @@ void kmain(void) {
     heap_init();
 
     smp_init();
+
+    syscall_init();
 
     /* Bootstrap the scheduler around the BSP's current context, then spawn
      * two kernel threads. Timer IRQ will preempt us into them once sti

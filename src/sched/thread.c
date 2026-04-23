@@ -1,5 +1,6 @@
 #include "thread.h"
 #include "../arch/x86_64/gdt.h"
+#include "../arch/x86_64/syscall.h"
 #include "../kprintf.h"
 #include "../mm/heap.h"
 #include "../panic.h"
@@ -152,10 +153,12 @@ void thread_yield(void) {
     if (!prev || prev->next == prev) return;
 
     struct thread *next = prev->next;
-    /* Update TSS.rsp0 so an IRQ taken from ring 3 on the incoming thread
-     * lands on its own kernel stack. No-op for kernel-only threads. */
+    /* Update TSS.rsp0 (IRQs from ring 3) and the syscall entry scratch
+     * (SYSCALL from ring 3) so both paths land on this thread's own
+     * kernel stack. No-op for kernel-only threads. */
     if (next->kernel_stack_top) {
         tss_set_kernel_stack(next->kernel_stack_top);
+        syscall_kernel_rsp = next->kernel_stack_top;
     }
     current = next;
     switch_context(&prev->rsp, next->rsp);
