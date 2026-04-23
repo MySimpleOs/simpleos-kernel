@@ -24,6 +24,7 @@ CFLAGS      := -std=gnu11 \
                -m64 \
                -Wall -Wextra -O2 -g \
                -MMD -MP \
+               -I$(SRC) \
                -I$(BUILD_DIR)/include
 
 LDFLAGS     := -nostdlib -static --no-dynamic-linker \
