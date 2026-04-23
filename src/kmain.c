@@ -14,8 +14,10 @@
 #include "arch/x86_64/apic.h"
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/idt.h"
+#include "arch/x86_64/ioapic.h"
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/serial.h"
+#include "drivers/keyboard.h"
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
 extern volatile uint64_t limine_base_revision[3];
@@ -88,6 +90,10 @@ void kmain(void) {
     kprintf("[boot] framebuffer painted\n");
 
     lapic_timer_init(100);
+
+    ioapic_init();
+    keyboard_init();
+    ioapic_set_irq(KEYBOARD_GSI, KEYBOARD_VECTOR, 0);
 
     kprintf("[boot] enabling interrupts, entering idle\n");
     idle();

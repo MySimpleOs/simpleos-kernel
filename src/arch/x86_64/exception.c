@@ -1,5 +1,6 @@
 #include "apic.h"
 
+#include "../../drivers/keyboard.h"
 #include "../../kprintf.h"
 #include "../../panic.h"
 
@@ -78,6 +79,12 @@ void interrupt_dispatch(struct interrupt_frame *frame) {
         if ((timer_ticks % 100) == 0) {
             kprintf("[timer] %u s\n", (unsigned) (timer_ticks / 100));
         }
+        lapic_eoi();
+        return;
+    }
+
+    if (frame->vector == KEYBOARD_VECTOR) {
+        keyboard_handle_irq();
         lapic_eoi();
         return;
     }
