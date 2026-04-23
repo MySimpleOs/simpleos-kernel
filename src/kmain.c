@@ -18,6 +18,7 @@
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/serial.h"
 #include "drivers/keyboard.h"
+#include "mm/heap.h"
 #include "mm/pmm.h"
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
@@ -96,6 +97,24 @@ void kmain(void) {
     ioapic_init();
     keyboard_init();
     ioapic_set_irq(KEYBOARD_GSI, KEYBOARD_VECTOR, 0);
+
+    heap_init();
+
+    /* Sanity check: allocate a few blocks, free the middle one, reallocate
+     * a slightly bigger chunk that should land in the coalesced hole. */
+    void *a = kmalloc(100);
+    void *b = kmalloc(1000);
+    void *c = kmalloc(50);
+    kprintf("[heap] test: a=%p b=%p c=%p\n", a, b, c);
+    heap_dump();
+    kfree(b);
+    void *d = kmalloc(500);
+    kprintf("[heap] after kfree(b) + kmalloc(500): d=%p\n", d);
+    heap_dump();
+    kfree(a);
+    kfree(c);
+    kfree(d);
+    heap_dump();
 
     kprintf("[boot] enabling interrupts, entering idle\n");
     idle();
