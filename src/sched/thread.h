@@ -1,8 +1,18 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define THREAD_NAME_LEN 16
+#define THREAD_FD_MAX   32
+
+struct vnode;
+
+struct file_desc {
+    struct vnode *node;
+    size_t        offset;
+    int           in_use;
+};
 
 struct thread {
     uint64_t rsp;                          /* saved when not running          */
@@ -17,6 +27,7 @@ struct thread {
     void    *arg;
     uint64_t user_rip;                     /* entry point in user space       */
     uint64_t user_stack_top;               /* top of ring-3 stack             */
+    struct   file_desc fds[THREAD_FD_MAX]; /* per-thread open files           */
 };
 
 /* Context switch: save callee-saved registers into the current stack and

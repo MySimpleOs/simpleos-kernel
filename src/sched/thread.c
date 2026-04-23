@@ -88,6 +88,11 @@ static struct thread *alloc_thread(const char *name) {
     t->arg              = NULL;
     t->user_rip         = 0;
     t->user_stack_top   = 0;
+    for (int i = 0; i < THREAD_FD_MAX; i++) {
+        t->fds[i].node   = NULL;
+        t->fds[i].offset = 0;
+        t->fds[i].in_use = 0;
+    }
     copy_name(t->name, name ? name : "thread");
     return t;
 }
@@ -144,6 +149,11 @@ void sched_init(struct thread *bootstrap) {
     bootstrap->kernel_stack_top = 0;
     bootstrap->user_rip         = 0;
     bootstrap->user_stack_top   = 0;
+    for (int i = 0; i < THREAD_FD_MAX; i++) {
+        bootstrap->fds[i].node   = NULL;
+        bootstrap->fds[i].offset = 0;
+        bootstrap->fds[i].in_use = 0;
+    }
     copy_name(bootstrap->name, "bsp-idle");
     current = bootstrap;
 }

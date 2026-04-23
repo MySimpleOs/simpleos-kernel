@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "../../fs/vfs.h"
 #include "../../kprintf.h"
 #include "../../sched/thread.h"
 
@@ -61,18 +62,59 @@ void syscall_init(void) {
 /* ---------------- syscall table ---------------- */
 
 enum {
+    SYS_READ  = 0,
     SYS_WRITE = 1,
+    SYS_OPEN  = 2,
+    SYS_CLOSE = 3,
     SYS_EXIT  = 60,
 };
 
 static int64_t sys_write(int fd, const char *buf, size_t count) {
-    (void) fd;
-    /* Ring-3 buffer — single address space today, so the kernel can touch
-     * it directly. A real VM-safe copy will arrive with per-process PML4s. */
+    if (fd != 1 && fd != 2) return -1;    /* only stdout/stderr for now      */
     for (size_t i = 0; i < count; i++) {
         kprintf("%c", buf[i]);
     }
     return (int64_t) count;
+}
+
+static int64_t sys_open(const char *path, int flags) {
+    (void) flags;                          /* O_RDONLY only today             */
+    struct vnode *v = vfs_lookup(path);
+    if (!v || v->type != VFS_FILE) return -1;
+
+    struct thread *t = thread_current();
+    /* fds 0/1/2 are conceptually stdin/stdout/stderr even though we don't
+     * formally track them, so start searching from 3. */
+    for (int i = 3; i < THREAD_FD_MAX; i++) {
+        if (!t->fds[i].in_use) {
+            t->fds[i].node   = v;
+            t->fds[i].offset = 0;
+            t->fds[i].in_use = 1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int64_t sys_close(int fd) {
+    if (fd < 0 || fd >= THREAD_FD_MAX) return -1;
+    struct thread *t = thread_current();
+    if (!t->fds[fd].in_use) return -1;
+    t->fds[fd].in_use = 0;
+    t->fds[fd].node   = NULL;
+    t->fds[fd].offset = 0;
+    return 0;
+}
+
+static int64_t sys_read(int fd, void *buf, size_t count) {
+    if (fd == 0) return 0;                 /* stdin — no console input yet    */
+    if (fd < 0 || fd >= THREAD_FD_MAX) return -1;
+    struct thread *t = thread_current();
+    if (!t->fds[fd].in_use) return -1;
+
+    int64_t n = vfs_read(t->fds[fd].node, t->fds[fd].offset, count, buf);
+    if (n > 0) t->fds[fd].offset += (size_t) n;
+    return n;
 }
 
 __attribute__((noreturn))
@@ -83,10 +125,20 @@ static void sys_exit(int code) {
 
 void syscall_dispatch(struct syscall_frame *f) {
     switch (f->rax) {
+        case SYS_READ:
+            f->rax = (uint64_t) sys_read((int) f->rdi, (void *) f->rsi,
+                                         (size_t) f->rdx);
+            return;
         case SYS_WRITE:
             f->rax = (uint64_t) sys_write((int) f->rdi,
                                           (const char *) f->rsi,
                                           (size_t) f->rdx);
+            return;
+        case SYS_OPEN:
+            f->rax = (uint64_t) sys_open((const char *) f->rdi, (int) f->rsi);
+            return;
+        case SYS_CLOSE:
+            f->rax = (uint64_t) sys_close((int) f->rdi);
             return;
         case SYS_EXIT:
             sys_exit((int) f->rdi);
