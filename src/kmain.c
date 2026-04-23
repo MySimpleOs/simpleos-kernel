@@ -11,6 +11,7 @@
 
 #include "kprintf.h"
 #include "arch/x86_64/gdt.h"
+#include "arch/x86_64/idt.h"
 #include "arch/x86_64/serial.h"
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
@@ -44,6 +45,7 @@ void kmain(void) {
     kprintf("[boot] limine base revision 3 accepted\n");
 
     gdt_init();
+    idt_init();
 
     if (framebuffer_request.response == NULL
         || framebuffer_request.response->framebuffer_count < 1) {
@@ -71,6 +73,11 @@ void kmain(void) {
         fill_rect(pixels, stride, x0, y0, box, box, 0xffff5533);
     }
 
-    kprintf("[boot] framebuffer painted, halting\n");
+    kprintf("[boot] framebuffer painted\n");
+
+    kprintf("[test] issuing int3 to exercise the exception path\n");
+    __asm__ volatile ("int3");
+    kprintf("[test] returned from int3 handler OK\n");
+
     hang();
 }
