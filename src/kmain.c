@@ -26,6 +26,12 @@ static void hang(void) {
     }
 }
 
+static void idle(void) {
+    for (;;) {
+        __asm__ volatile ("sti; hlt");
+    }
+}
+
 static void fill_rect(uint32_t *pixels, size_t stride,
                       size_t x0, size_t y0,
                       size_t w,  size_t h,
@@ -81,9 +87,8 @@ void kmain(void) {
 
     kprintf("[boot] framebuffer painted\n");
 
-    kprintf("[test] issuing int3 to exercise the exception path\n");
-    __asm__ volatile ("int3");
-    kprintf("[test] returned from int3 handler OK\n");
+    lapic_timer_init(100);
 
-    hang();
+    kprintf("[boot] enabling interrupts, entering idle\n");
+    idle();
 }

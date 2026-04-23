@@ -54,6 +54,26 @@ ISR_NOERR 29
 ISR_NOERR 30
 ISR_NOERR 31
 
+/* IRQ slots 0x20..0x2F — used by the LAPIC timer and future IOAPIC-routed
+ * devices. All push a zero placeholder for the error-code slot so the
+ * common frame layout stays uniform. */
+ISR_NOERR 32
+ISR_NOERR 33
+ISR_NOERR 34
+ISR_NOERR 35
+ISR_NOERR 36
+ISR_NOERR 37
+ISR_NOERR 38
+ISR_NOERR 39
+ISR_NOERR 40
+ISR_NOERR 41
+ISR_NOERR 42
+ISR_NOERR 43
+ISR_NOERR 44
+ISR_NOERR 45
+ISR_NOERR 46
+ISR_NOERR 47
+
 isr_common:
     pushq %rax
     pushq %rbx

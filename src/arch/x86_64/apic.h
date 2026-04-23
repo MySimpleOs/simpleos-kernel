@@ -21,7 +21,16 @@ enum {
 
 #define LAPIC_SPURIOUS_VECTOR 0xFF
 
+#define LAPIC_TIMER_VECTOR 0x20
+
 void     lapic_init(void);
 uint32_t lapic_read(uint32_t reg);
 void     lapic_write(uint32_t reg, uint32_t value);
 void     lapic_eoi(void);
+
+/* Calibrate against the PIT, then program the LAPIC timer in periodic mode
+ * firing at `hz` Hz on vector LAPIC_TIMER_VECTOR. */
+void lapic_timer_init(uint32_t hz);
+
+/* Monotonically increasing counter updated by the LAPIC timer handler. */
+extern volatile uint64_t timer_ticks;

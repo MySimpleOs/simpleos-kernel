@@ -1,3 +1,5 @@
+#include "apic.h"
+
 #include "../../kprintf.h"
 #include "../../panic.h"
 
@@ -71,6 +73,16 @@ void interrupt_dispatch(struct interrupt_frame *frame) {
         panic("CPU exception");
     }
 
-    kprintf("[irq] spurious vector %u (faz-4.4 territory)\n",
+    if (frame->vector == LAPIC_TIMER_VECTOR) {
+        timer_ticks++;
+        if ((timer_ticks % 100) == 0) {
+            kprintf("[timer] %u s\n", (unsigned) (timer_ticks / 100));
+        }
+        lapic_eoi();
+        return;
+    }
+
+    kprintf("[irq] unhandled vector %u — sending EOI\n",
             (unsigned) frame->vector);
+    lapic_eoi();
 }

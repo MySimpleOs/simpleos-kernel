@@ -1,10 +1,13 @@
 #include "apic.h"
 #include "acpi.h"
+#include "pit.h"
 #include "../../kprintf.h"
 #include "../../mm/vmm.h"
 
 #include <limine.h>
 #include <stdint.h>
+
+volatile uint64_t timer_ticks = 0;
 
 #define IA32_APIC_BASE_MSR 0x1B
 #define LAPIC_GLOBAL_ENABLE (1u << 11)
@@ -57,4 +60,31 @@ void lapic_init(void) {
     uint32_t version = lapic_read(LAPIC_VERSION) & 0xFF;
     kprintf("[lapic] enabled id=%u version=0x%x @ %p\n",
             (unsigned) id, (unsigned) version, lapic_mmio);
+}
+
+void lapic_timer_init(uint32_t hz) {
+    /* Divide configuration: divide-by-16 (binary 0b1011 but encoded weird). */
+    lapic_write(LAPIC_TIMER_DIV, 0x3);
+
+    /* Kick off a 10 ms PIT oneshot and let the LAPIC timer tick down from
+     * 0xFFFFFFFF in the meantime — the delta tells us ticks/10 ms. */
+    uint16_t pit_ticks = (uint16_t) (PIT_FREQUENCY / 100);
+    pit_prepare_oneshot(pit_ticks);
+    lapic_write(LAPIC_TIMER_INITCNT, 0xFFFFFFFF);
+
+    while (!pit_oneshot_done()) {
+        __asm__ volatile ("pause");
+    }
+
+    uint32_t remaining = lapic_read(LAPIC_TIMER_CURCNT);
+    uint32_t consumed  = 0xFFFFFFFF - remaining;
+
+    uint32_t count = (uint32_t) ((uint64_t) consumed * 100 / hz);
+
+    /* LVT timer: vector | periodic (bit 17). */
+    lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | (1u << 17));
+    lapic_write(LAPIC_TIMER_INITCNT, count);
+
+    kprintf("[lapic] timer: %u ticks/10ms, periodic @ %u Hz (count=%u)\n",
+            (unsigned) consumed, (unsigned) hz, (unsigned) count);
 }

@@ -32,6 +32,10 @@ extern void isr16(void); extern void isr17(void); extern void isr18(void); exter
 extern void isr20(void); extern void isr21(void); extern void isr22(void); extern void isr23(void);
 extern void isr24(void); extern void isr25(void); extern void isr26(void); extern void isr27(void);
 extern void isr28(void); extern void isr29(void); extern void isr30(void); extern void isr31(void);
+extern void isr32(void); extern void isr33(void); extern void isr34(void); extern void isr35(void);
+extern void isr36(void); extern void isr37(void); extern void isr38(void); extern void isr39(void);
+extern void isr40(void); extern void isr41(void); extern void isr42(void); extern void isr43(void);
+extern void isr44(void); extern void isr45(void); extern void isr46(void); extern void isr47(void);
 
 static void idt_set(int vec, void (*handler)(void), uint8_t type_attr) {
     uint64_t addr = (uint64_t) handler;
@@ -45,13 +49,15 @@ static void idt_set(int vec, void (*handler)(void), uint8_t type_attr) {
 }
 
 void idt_init(void) {
-    void (*stubs[32])(void) = {
+    void (*stubs[48])(void) = {
         isr0,  isr1,  isr2,  isr3,  isr4,  isr5,  isr6,  isr7,
         isr8,  isr9,  isr10, isr11, isr12, isr13, isr14, isr15,
         isr16, isr17, isr18, isr19, isr20, isr21, isr22, isr23,
         isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31,
+        isr32, isr33, isr34, isr35, isr36, isr37, isr38, isr39,
+        isr40, isr41, isr42, isr43, isr44, isr45, isr46, isr47,
     };
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < 48; i++) {
         /* 0x8E: present | DPL=0 | 64-bit interrupt gate */
         idt_set(i, stubs[i], 0x8E);
     }
@@ -60,6 +66,6 @@ void idt_init(void) {
     idt_desc.base  = (uint64_t) idt;
     idt_flush(&idt_desc);
 
-    kprintf("[idt] loaded @ %p (%u entries, 32 CPU exception handlers live)\n",
+    kprintf("[idt] loaded @ %p (%u entries, vectors 0-47 wired)\n",
             idt, (unsigned) (sizeof(idt) / sizeof(idt[0])));
 }
