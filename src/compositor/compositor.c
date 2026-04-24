@@ -221,17 +221,18 @@ void compositor_frame(uint32_t bg_xrgb) {
         }
     }
 
-    /* ---- phase 3: present each damage rect separately ---- */
-    /* Per-rect present beats a bbox when rects are disjoint: the bbox
-     * of (top-left animating window + bottom-right cursor) covers most
-     * of the screen, while the two actual rects together touch only a
-     * tiny fraction. VirtIO submit overhead (~1 µs per command) is
-     * cheap relative to the pixel transfer it saves. The damage list is
-     * bounded at DAMAGE_MAX_RECTS (collapses to a bbox on overflow),
-     * so submit count stays tight. */
-    for (int ri = 0; ri < dmg.count; ri++) {
-        display_present_rect(dmg.rects[ri]);
-    }
+    /* ---- phase 3: present the damage bbox as ONE transfer+flush ---- */
+    /* Multi-rect present (1 TRANSFER+FLUSH per damage rect) leaks a
+     * visible tearing window: between FLUSH of rect_i and FLUSH of
+     * rect_{i+1}, the host display may refresh and show a frame where
+     * rect_i has this frame's pixels while rect_{i+1} still holds last
+     * frame's. With a 120 Hz guest driving a 60 Hz host that interleave
+     * hits every other frame and reads as "flick" on any surface that
+     * moves. A single bbox TRANSFER+FLUSH makes each guest frame
+     * atomic from the host's point of view, at the cost of a few
+     * unused bg pixels inside the bbox. CPU compose cost stays low
+     * because blit is still scissor-clipped per rect in phase 2. */
+    display_present_rect(damage_bbox(&dmg));
 
     /* ---- phase 4: snapshot prev state + clear dirty bits ---- */
     for (int i = 0; i < slot_count; i++) {
