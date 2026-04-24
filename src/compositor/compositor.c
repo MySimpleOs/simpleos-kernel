@@ -221,18 +221,22 @@ void compositor_frame(uint32_t bg_xrgb) {
         }
     }
 
-    /* ---- phase 3: present the damage bbox as ONE transfer+flush ---- */
-    /* Multi-rect present (1 TRANSFER+FLUSH per damage rect) leaks a
-     * visible tearing window: between FLUSH of rect_i and FLUSH of
-     * rect_{i+1}, the host display may refresh and show a frame where
-     * rect_i has this frame's pixels while rect_{i+1} still holds last
-     * frame's. With a 120 Hz guest driving a 60 Hz host that interleave
-     * hits every other frame and reads as "flick" on any surface that
-     * moves. A single bbox TRANSFER+FLUSH makes each guest frame
-     * atomic from the host's point of view, at the cost of a few
-     * unused bg pixels inside the bbox. CPU compose cost stays low
-     * because blit is still scissor-clipped per rect in phase 2. */
-    display_present_rect(damage_bbox(&dmg));
+    /* ---- phase 3: full-screen present ---- */
+    /* Why full-screen and not the damage bbox? With sub-rect
+     * TRANSFER_TO_HOST_2D the guest backing is read between QEMU's
+     * display-refresh ticks; any subtle race (partial iov_to_buf copy,
+     * display thread vs. IO thread lock interleave in some QEMU
+     * builds, virgl path for -vga virtio, etc.) surfaces as an edge
+     * of the moved surface flickering in and out. Users reported the
+     * bottom of moving surfaces disappearing and coming back — the
+     * classic visible tear signature.
+     *
+     * Full-screen TRANSFER + FLUSH every frame removes sub-rect as a
+     * variable entirely. At 1280x800 the backing is 4 MiB; at 120 Hz
+     * that's 480 MiB/s into QEMU's iov path — comfortable. CPU
+     * compose stays cheap because the per-rect scissor blit in phase
+     * 2 still only touches dirty pixels. */
+    display_present();
 
     /* ---- phase 4: snapshot prev state + clear dirty bits ---- */
     for (int i = 0; i < slot_count; i++) {
@@ -276,13 +280,17 @@ static void compositor_thread_body(void *arg) {
     uint64_t tsc_per_us = tsc_hz / 1000000ull;
     if (!tsc_per_us) tsc_per_us = 1;
 
-    /* Measured dt keeps animation speed wall-clock-accurate even when
-     * frame times drift (virtio_gpu flushes, thread preemption). Start
-     * with the target step; the first real tick replaces it. */
-    uint64_t prev_tsc = rdtsc();
-    fx16     target_dt = fx_div(FX_ONE, FX_FROM_INT(thread_args.target_hz));
-    fx16     dt_cap    = target_dt * 2;
-    fx16     dt_fx     = target_dt;
+    /* Fixed dt of exactly 1/target_hz. Measured dt (tsc-based) drifts
+     * frame-to-frame — that's wall-clock-accurate but produces visibly
+     * non-uniform motion (a 12 ms frame advances the animation farther
+     * than an 8 ms frame, then the next lands in a different
+     * sub-pixel, reading as judder/flicker on any surface that moves).
+     * Fixed dt gives the animation engine a uniform input; if the
+     * scheduler stalls for real (rare), motion pauses briefly rather
+     * than teleporting. At 120 Hz the stutter is invisible; the
+     * cure-better-than-the-disease calculus. */
+    fx16 target_dt = fx_div(FX_ONE, FX_FROM_INT(thread_args.target_hz));
+    fx16 dt_fx     = target_dt;
 
     uint64_t next    = timer_ticks + fpt;
     uint32_t window_count = 0;
@@ -290,18 +298,6 @@ static void compositor_thread_body(void *arg) {
 
     for (;;) {
         while ((uint64_t) timer_ticks < next) thread_yield();
-
-        uint64_t frame_tsc = rdtsc();
-        {
-            uint64_t elapsed = frame_tsc - prev_tsc;
-            /* seconds * ONE = (cycles * ONE) / tsc_hz; cap at 2× target
-             * so a long stall doesn't teleport animations. */
-            fx16 measured = (fx16) ((elapsed * (uint64_t) FX_ONE) / tsc_hz);
-            if (measured <= 0)     measured = 1;
-            if (measured > dt_cap) measured = dt_cap;
-            dt_fx = measured;
-            prev_tsc = frame_tsc;
-        }
 
         anim_tick_all(dt_fx);
         cursor_tick();
