@@ -37,6 +37,9 @@ void compositor_lower(struct surface *s);
  * state the damage tracker can't see (e.g. the desktop bg colour). */
 void compositor_mark_full_damage(void);
 
+/* Update desktop clear color used by the compositor thread; marks full damage. */
+void compositor_set_desktop_bg(uint32_t bg_xrgb);
+
 /* Build the damage set from surface prev vs current state, scissor-clip
  * clears + blits to the damage rects, present only the damage bbox.
  * Safe to call without surfaces — on the first frame the full screen
@@ -47,7 +50,8 @@ void compositor_frame(uint32_t bg_xrgb);
 /* Spawn a dedicated kernel thread that calls compositor_frame(bg) at
  * `target_hz` Hz. Paces itself against timer_ticks (see apic.h). Starts
  * immediately; safe to call after sched_init. */
-#define COMPOSITOR_DEFAULT_BG 0xff0a1e3c   /* dark navy desktop            */
+/* Fallback if theme not initialized; prefer ui_theme_get_u32("color.bg.base"). */
+#define COMPOSITOR_DEFAULT_BG 0xff1e1e1eu
 void compositor_start(uint32_t bg_xrgb, uint32_t target_hz);
 
 /* Frame-time statistics collected by the compositor thread. Values are

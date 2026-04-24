@@ -30,6 +30,10 @@
 #define SURFACE_NAME_LEN      24
 #define SURFACE_MAX_CORNER    64u  /* keeps sdf int math inside u32         */
 
+/* Pointer overlay uses the top z; windows and protocol z must stay below. */
+#define SURFACE_Z_CURSOR_LAYER ((int32_t)2147483647) /* INT32_MAX */
+#define SURFACE_Z_USER_MAX     (SURFACE_Z_CURSOR_LAYER - 1)
+
 struct surface {
     char      name[SURFACE_NAME_LEN];
     uint32_t *pixels;           /* ARGB8888, stride = width                  */

@@ -27,6 +27,8 @@ void mouse_init(uint32_t screen_w, uint32_t screen_h);
 void mouse_set_screen(uint32_t screen_w, uint32_t screen_h);
 /* Absolute pointer (virtio-tablet): replaces PS/2 deltas for this frame. */
 void mouse_absolute_inject(int32_t x, int32_t y, uint8_t buttons);
+/* Relative motion + buttons (USB HID boot, etc.): same axis policy as PS/2. */
+void mouse_rel_inject(int32_t dx, int32_t dy, uint8_t buttons);
 void mouse_handle_irq(void);
 /* IRQ1 may see PS/2 aux-port bytes on the same controller; forward them here
  * so they are not decoded as keyboard scan codes. */

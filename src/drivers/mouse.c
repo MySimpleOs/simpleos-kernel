@@ -109,6 +109,13 @@ void mouse_absolute_inject(int32_t x, int32_t y, uint8_t buttons) {
     __atomic_add_fetch(&events, 1, __ATOMIC_RELAXED);
 }
 
+void mouse_rel_inject(int32_t dx, int32_t dy, uint8_t buttons) {
+    cur_x   = clamp(cur_x + dx, 0, (int32_t) scr_w - (int32_t) 1);
+    cur_y   = clamp(cur_y - dy, 0, (int32_t) scr_h - (int32_t) 1);
+    cur_btn = buttons;
+    __atomic_add_fetch(&events, 1, __ATOMIC_RELAXED);
+}
+
 void mouse_set_screen(uint32_t screen_w, uint32_t screen_h) {
     scr_w = screen_w ? screen_w : 1280;
     scr_h = screen_h ? screen_h : 800;
@@ -168,9 +175,9 @@ static void mouse_init_ps2_aux(void) {
 
     ps2_detect_wheel_mode();
 
-    kprintf("[mouse] PS/2 aux pkt=%d @ %u,%u — bare metal: USB HID not in kernel "
-            "yet; enable BIOS “Legacy USB”/PS/2 emulation if available, or use "
-            "QEMU -device virtio-tablet\n",
+    kprintf("[mouse] PS/2 aux pkt=%d @ %u,%u — internal touchpads are often I2C "
+            "(no PS/2 stream); USB needs xHCI root HID (see [usb-mouse] log); "
+            "QEMU: -device virtio-tablet; BIOS: legacy USB→PS/2 if offered\n",
             pkt_expect, (unsigned) cur_x, (unsigned) cur_y);
 }
 

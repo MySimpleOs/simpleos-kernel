@@ -15,6 +15,8 @@ enum {
 
 /* LSR bit 5: transmitter holding register empty — safe to write next byte. */
 #define LSR_THR_EMPTY 0x20
+/* LSR bit 0: data ready — at least one byte in RBR/FIFO. */
+#define LSR_DATA_READY 0x01
 
 static int initialized = 0;
 
@@ -58,4 +60,10 @@ void serial_puts(const char *s) {
     while (*s) {
         serial_putc(*s++);
     }
+}
+
+int serial_try_getc(void) {
+    if (!(inb(COM1 + UART_LINE_STAT) & LSR_DATA_READY))
+        return -1;
+    return (int) inb(COM1 + UART_DATA);
 }

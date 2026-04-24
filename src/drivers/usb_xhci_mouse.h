@@ -2,8 +2,9 @@
 
 #include <stdint.h>
 
-/* xHCI USB HID mouse: not yet implemented (stub). Falls back to PS/2 aux or
- * virtio-tablet. External USB mice need a full host stack (see ROADMAP). */
+/* xHCI USB HID mouse: all PCI xHCI controllers, first MMIO BAR, root ports only.
+ * Boot + common report layouts (report ID, 16-bit relative XY). No hubs / I2C
+ * touchpad — those need additional drivers like other OSes. */
 
 int  usb_xhci_mouse_init(uint32_t screen_w, uint32_t screen_h);
 void usb_xhci_mouse_shutdown(void);

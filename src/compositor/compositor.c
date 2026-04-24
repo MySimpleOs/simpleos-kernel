@@ -31,6 +31,13 @@ static volatile uint64_t cs_frame_count;
 static volatile uint32_t cs_last_us, cs_avg_us, cs_max_us, cs_drops;
 static volatile uint32_t cs_damage_rects, cs_damage_px, cs_skipped;
 
+struct compositor_args {
+    uint32_t bg;
+    uint32_t target_hz;
+};
+
+static struct compositor_args thread_args;
+
 void compositor_init(void) {
     for (int i = 0; i < COMPOSITOR_MAX_SURFACES; i++) slots[i] = NULL;
     slot_count = 0;
@@ -73,32 +80,45 @@ void compositor_mark_full_damage(void) {
     full_damage_requested = 1;
 }
 
-static int top_z(void) {
+void compositor_set_desktop_bg(uint32_t bg_xrgb) {
+    thread_args.bg = bg_xrgb;
+    full_damage_requested = 1;
+}
+
+/* Stacking among user surfaces only; cursor layer is never raised/lowered here. */
+static int32_t top_z_user(void) {
     int32_t max_z = 0;
     int     have  = 0;
     for (int i = 0; i < slot_count; i++) {
-        if (!have || slots[i]->z > max_z) { max_z = slots[i]->z; have = 1; }
+        int32_t z = slots[i]->z;
+        if (z >= SURFACE_Z_CURSOR_LAYER) continue;
+        if (!have || z > max_z) { max_z = z; have = 1; }
     }
     return have ? max_z : 0;
 }
 
-static int bottom_z(void) {
+static int32_t bottom_z_user(void) {
     int32_t min_z = 0;
     int     have  = 0;
     for (int i = 0; i < slot_count; i++) {
-        if (!have || slots[i]->z < min_z) { min_z = slots[i]->z; have = 1; }
+        int32_t z = slots[i]->z;
+        if (z >= SURFACE_Z_CURSOR_LAYER) continue;
+        if (!have || z < min_z) { min_z = z; have = 1; }
     }
     return have ? min_z : 0;
 }
 
 void compositor_raise(struct surface *s) {
-    if (!s) return;
-    s->z = top_z() + 1;
+    if (!s || s->z >= SURFACE_Z_CURSOR_LAYER) return;
+    int32_t t = top_z_user();
+    int32_t nz = t + 1;
+    if (nz > SURFACE_Z_USER_MAX) nz = SURFACE_Z_USER_MAX;
+    s->z = nz;
 }
 
 void compositor_lower(struct surface *s) {
-    if (!s) return;
-    s->z = bottom_z() - 1;
+    if (!s || s->z >= SURFACE_Z_CURSOR_LAYER) return;
+    s->z = bottom_z_user() - 1;
 }
 
 /* Insertion-sort slot indices by z ascending (low → high). Stable enough
@@ -264,13 +284,6 @@ void compositor_frame(uint32_t bg_xrgb) {
         s->dirty_rect_valid    = 0;
     }
 }
-
-struct compositor_args {
-    uint32_t bg;
-    uint32_t target_hz;
-};
-
-static struct compositor_args thread_args;
 
 /* TSC delta → anim dt (seconds, Q16.16). Caps long stalls. */
 static fx16 tsc_elapsed_to_dt(uint64_t delta, uint64_t hz) {

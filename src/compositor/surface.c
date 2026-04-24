@@ -74,7 +74,11 @@ void surface_move(struct surface *s, int32_t x, int32_t y) {
     s->x = x; s->y = y;
 }
 
-void surface_set_z(struct surface *s, int32_t z)    { if (s) s->z = z; }
+void surface_set_z(struct surface *s, int32_t z) {
+    if (!s) return;
+    if (z > SURFACE_Z_USER_MAX) z = SURFACE_Z_USER_MAX;
+    s->z = z;
+}
 void surface_set_alpha(struct surface *s, uint8_t a){ if (s) s->alpha = a; }
 void surface_show(struct surface *s, int visible)   { if (s) s->visible = visible ? 1 : 0; }
 

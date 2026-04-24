@@ -34,6 +34,12 @@
 #include "mm/pmm.h"
 #include "mm/vmm.h"
 #include "sched/thread.h"
+#include "ui/ui_theme.h"
+
+static void ui_theme_on_compositor_changed(void) {
+    compositor_set_desktop_bg(ui_theme_get_u32("color.bg.base"));
+    simple_desktop_apply_theme();
+}
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
 extern volatile uint64_t limine_base_revision[3];
@@ -58,9 +64,6 @@ static void idle(void) {
  * linked to start at 0x400000, ready to run once copied into a user page. */
 extern const uint8_t userdemo_start[];
 extern const uint8_t userdemo_end[];
-
-/* Opaque black desktop (ARGB); compositor clears damage rects to this. */
-#define BOOT_DESKTOP_BG 0xff000000u
 
 static void spawn_user_demo(void) {
     uint64_t blob_size = (uint64_t) (userdemo_end - userdemo_start);
@@ -139,6 +142,10 @@ void kmain(void) {
         display_policy_try_load_vfs("/etc/display.conf");
     }
 
+    ui_theme_init();
+    uint32_t boot_desktop_bg = ui_theme_get_u32("color.bg.base");
+    if (boot_desktop_bg == 0u) boot_desktop_bg = 0xff1e1e1eu;
+
     display_init();
 
     compositor_init();
@@ -146,8 +153,7 @@ void kmain(void) {
     input_routing_init();
     display_server_init();
     simple_desktop_init();
-    compositor_frame(BOOT_DESKTOP_BG);
-    kprintf("[boot] desktop + dock ready (click blue dock tile for demo terminal)\n");
+    ui_theme_subscribe_changed(ui_theme_on_compositor_changed);
 
     vfs_dump(NULL, 0);
 
@@ -160,17 +166,17 @@ void kmain(void) {
         uint8_t apic_dest = lapic_current_id();
         ioapic_set_irq(KEYBOARD_GSI, KEYBOARD_VECTOR, apic_dest);
 
-        /* PS/2 aux (mouse): enable controller port, wire IRQ 12 → vector. */
+        /* PS/2 aux + USB xHCI poll paths; IRQ12 drains PS/2 when not USB/virtio. */
         const struct display *dd = display_get();
         mouse_init(dd ? dd->width : 0, dd ? dd->height : 0);
-        /* Destination must be this CPU's xAPIC ID (not always 0). */
         ioapic_set_irq(MOUSE_GSI, MOUSE_VECTOR, apic_dest);
     }
+    /* Cursor before first paint so frame 1 includes the pointer (was: late until
+     * second compositor_frame after smp). */
     cursor_init();
-    /* First compositor_frame ran before the cursor surface existed; repaint
-     * once so the pointer is visible without waiting for the compositor thread. */
     compositor_mark_full_damage();
-    compositor_frame(BOOT_DESKTOP_BG);
+    compositor_frame(boot_desktop_bg);
+    kprintf("[boot] desktop + dock ready (click accent dock tile for demo terminal)\n");
 
     smp_init();
 
@@ -183,7 +189,7 @@ void kmain(void) {
     sched_init(&bsp_thread);
 
     /* Target frame rate from /etc/display.conf (refresh_hz), capped. */
-    compositor_start(BOOT_DESKTOP_BG, display_policy_compositor_hz());
+    compositor_start(boot_desktop_bg, display_policy_compositor_hz());
     simple_desktop_start_poller();
 
     spawn_user_demo();

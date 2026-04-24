@@ -7,6 +7,7 @@
 #include "../kprintf.h"
 #include "../sched/thread.h"
 #include "../wm/window_manager.h"
+#include "../ui/ui_theme.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -62,8 +63,8 @@ static void spawn_demo_terminal(void) {
     struct surface *s = surface_create("term", tw, th);
     if (!s) return;
 
-    surface_clear(s, 0xff16161a);
-    fill_rect(s, 0, 0, (int32_t) tw, 28, 0xff2d2d34);
+    surface_clear(s, ui_theme_get_u32("color.bg.surface"));
+    fill_rect(s, 0, 0, (int32_t) tw, 28, ui_theme_get_u32("color.bg.surface_elevated"));
 
     int32_t ox = 32 + n_terms * 36;
     int32_t oy = 32 + n_terms * 28;
@@ -78,14 +79,43 @@ static void spawn_demo_terminal(void) {
         return;
     }
 
-    (void) font_draw_utf8(s, 10, 8, "SimpleOS terminal (demo)", 0xffe8e8f0u);
+    (void) font_draw_utf8(s, 10, 8, "SimpleOS terminal (demo)",
+                          ui_theme_get_u32("color.text.primary"));
     (void) font_draw_utf8(s, 10, 36, "$ uname -a\nSimpleOS 0.1  x86_64\n$ _",
-                          0xffb0c4deu);
+                          ui_theme_get_u32("color.text.secondary"));
 
     s_terms[n_terms++] = s;
     wm_set_focus(id);
     kprintf("[desktop] spawned demo terminal #%d id=%u @ %d,%d\n",
             n_terms, (unsigned) id, (int) ox, (int) oy);
+}
+
+void simple_desktop_apply_theme(void) {
+    if (!s_dock) return;
+    uint32_t dw = s_dock->width;
+    surface_clear(s_dock, ui_theme_get_u32("color.bg.surface"));
+    fill_rect(s_dock, 0, 0, (int32_t) dw, 3, ui_theme_get_u32("color.border.subtle"));
+    fill_rect(s_dock, BTN_PAD, BTN_PAD, BTN_PAD + BTN_W, BTN_PAD + BTN_H,
+              ui_theme_get_u32("color.accent.default"));
+    fill_rect(s_dock, BTN_PAD + BTN_W + BTN_PAD, BTN_PAD,
+              BTN_PAD + BTN_W + BTN_PAD + BTN_W, BTN_PAD + BTN_H,
+              ui_theme_get_u32("color.semantic.success"));
+    fill_rect(s_dock, BTN_PAD + 2 * (BTN_W + BTN_PAD), BTN_PAD,
+              BTN_PAD + 3 * BTN_W + 2 * BTN_PAD, BTN_PAD + BTN_H,
+              ui_theme_get_u32("color.semantic.warning"));
+    surface_mark_dirty(s_dock);
+    for (int t = 0; t < n_terms; t++) {
+        struct surface *s = s_terms[t];
+        if (!s) continue;
+        uint32_t tw = s->width;
+        surface_clear(s, ui_theme_get_u32("color.bg.surface"));
+        fill_rect(s, 0, 0, (int32_t) tw, 28, ui_theme_get_u32("color.bg.surface_elevated"));
+        (void) font_draw_utf8(s, 10, 8, "SimpleOS terminal (demo)",
+                              ui_theme_get_u32("color.text.primary"));
+        (void) font_draw_utf8(s, 10, 36, "$ uname -a\nSimpleOS 0.1  x86_64\n$ _",
+                              ui_theme_get_u32("color.text.secondary"));
+        surface_mark_dirty(s);
+    }
 }
 
 static void dock_poller(void *arg) {
@@ -94,6 +124,7 @@ static void dock_poller(void *arg) {
     boot_grace = 0;
     for (;;) {
         thread_yield();
+        ui_theme_serial_poll();
         if (boot_grace < 60u) {
             boot_grace++;
             mouse_poll();
@@ -125,13 +156,16 @@ void simple_desktop_init(void) {
     s_dock = surface_create("dock", dw, DOCK_H);
     if (!s_dock) return;
 
-    surface_clear(s_dock, 0xff25252b);
-    fill_rect(s_dock, 0, 0, (int32_t) dw, 3, 0xff3d3d48);
-    fill_rect(s_dock, BTN_PAD, BTN_PAD, BTN_PAD + BTN_W, BTN_PAD + BTN_H, 0xff3a5a9a);
+    surface_clear(s_dock, ui_theme_get_u32("color.bg.surface"));
+    fill_rect(s_dock, 0, 0, (int32_t) dw, 3, ui_theme_get_u32("color.border.subtle"));
+    fill_rect(s_dock, BTN_PAD, BTN_PAD, BTN_PAD + BTN_W, BTN_PAD + BTN_H,
+              ui_theme_get_u32("color.accent.default"));
     fill_rect(s_dock, BTN_PAD + BTN_W + BTN_PAD, BTN_PAD,
-              BTN_PAD + BTN_W + BTN_PAD + BTN_W, BTN_PAD + BTN_H, 0xff3a4a5a);
+              BTN_PAD + BTN_W + BTN_PAD + BTN_W, BTN_PAD + BTN_H,
+              ui_theme_get_u32("color.semantic.success"));
     fill_rect(s_dock, BTN_PAD + 2 * (BTN_W + BTN_PAD), BTN_PAD,
-              BTN_PAD + 3 * BTN_W + 2 * BTN_PAD, BTN_PAD + BTN_H, 0xff3a5a4a);
+              BTN_PAD + 3 * BTN_W + 2 * BTN_PAD, BTN_PAD + BTN_H,
+              ui_theme_get_u32("color.semantic.warning"));
 
     dock_screen_y = (int32_t) d->height - (int32_t) DOCK_H;
     wm_window_id dock_id = wm_register_window(s_dock, 0, dock_screen_y, 5);
@@ -142,7 +176,7 @@ void simple_desktop_init(void) {
     }
     (void) dock_id;
 
-    kprintf("[desktop] dock %ux%u — click left blue tile for terminal (QEMU: virtio-tablet)\n",
+    kprintf("[desktop] dock %ux%u — click left accent tile for terminal (QEMU: virtio-tablet)\n",
             (unsigned) dw, (unsigned) DOCK_H);
 }
 

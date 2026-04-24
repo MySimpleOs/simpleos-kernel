@@ -5,3 +5,6 @@
 
 void simple_desktop_init(void);
 void simple_desktop_start_poller(void);
+
+/* Repaint dock / demo terminals from current ui_theme (after reload or appearance change). */
+void simple_desktop_apply_theme(void);
