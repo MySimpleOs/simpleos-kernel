@@ -41,6 +41,9 @@ LDFLAGS     := -nostdlib -static --no-dynamic-linker \
 
 KERNEL_ELF  := $(BUILD_DIR)/simpleos.elf
 
+FONT_ASSETS := $(CURDIR)/assets/NotoSans-Regular.ttf \
+               $(CURDIR)/assets/NotoSansSymbols2-Regular.ttf
+
 .PHONY: all clean
 
 all: $(KERNEL_ELF)
@@ -60,6 +63,15 @@ $(BUILD_DIR)/%.o: $(SRC)/%.c | $(BUILD_DIR)/include/limine.h
 $(BUILD_DIR)/compositor/blit_simd.o: $(SRC)/compositor/blit_simd.c | $(BUILD_DIR)/include/limine.h
 	@mkdir -p $(dir $@)
 	$(CC) $(filter-out -mgeneral-regs-only,$(CFLAGS)) -msse2 -c $< -o $@
+
+# stb_truetype uses float + __builtin_sqrt; -mgeneral-regs-only forbids XMM returns.
+$(BUILD_DIR)/compositor/font.o: $(SRC)/compositor/font.c | $(BUILD_DIR)/include/limine.h
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -mgeneral-regs-only,$(CFLAGS)) -msse2 -c $< -o $@
+
+$(BUILD_DIR)/assets/fonts.o: $(SRC)/assets/fonts.S $(FONT_ASSETS) | $(BUILD_DIR)/include/limine.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Wa,-I$(CURDIR)/assets -c $< -o $@
 
 $(BUILD_DIR)/%.o: $(SRC)/%.S
 	@mkdir -p $(dir $@)

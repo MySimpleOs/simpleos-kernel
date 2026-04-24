@@ -22,6 +22,7 @@
 #include "arch/x86_64/syscall.h"
 #include "compositor/anim.h"
 #include "compositor/compositor.h"
+#include "compositor/font.h"
 #include "compositor/cursor.h"
 #include "compositor/gradient.h"
 #include "compositor/surface.h"
@@ -132,6 +133,9 @@ void kmain(void) {
      * tables) are needed, both live by this point. */
     heap_init();
 
+    if (font_init() != 0)
+        kprintf("[boot] font_init failed (missing assets/*.ttf?)\n");
+
     display_init();
 
     /* Faz 12.3 demo: three overlapping surfaces animated by the spring
@@ -201,6 +205,16 @@ void kmain(void) {
                       FX_FROM_INT(3), EASE_IN_OUT_CUBIC);
             anim_bind_u8(a_al, &s3->alpha, FX_ONE, 0, 0, 255);
             anim_set_loop(a_al, 1);
+
+            /* Faz 12.9: UTF-8 + SDF cache + LCD subpixel (Noto Sans + Symbols2). */
+            if (s1) {
+                static const char k_font_demo[] =
+                    "SimpleOS "
+                    "\xc4\x9f\xc3\xbc\xc5\x9f\xc3\xb6\xc3\xa7\xc4\xb1 " /* ğüşöçı */
+                    "\xf0\x9f\x98\x80 "                                  /* U+1F600 */
+                    "\xe2\x98\xba";                                     /* U+263A */
+                font_draw_utf8(s1, 12, 18, k_font_demo, 0xffffffffu);
+            }
         }
     }
     compositor_frame(COMPOSITOR_DEFAULT_BG);
