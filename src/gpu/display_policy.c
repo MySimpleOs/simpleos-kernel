@@ -1,0 +1,162 @@
+#include "display_policy.h"
+
+#include "../fs/vfs.h"
+#include "../kprintf.h"
+
+#include <stddef.h>
+#include <stdint.h>
+
+static struct display_policy g_pol;
+
+static int is_space(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static const char *skip_ws(const char *p) {
+    while (*p && is_space((unsigned char) *p)) p++;
+    return p;
+}
+
+static int key_match(const char *a, const char *b, size_t blen) {
+    size_t i = 0;
+    for (; a[i] && i < blen; i++)
+        if (a[i] != b[i]) return 0;
+    return a[i] == '\0' && i == blen;
+}
+
+static int parse_u32(const char *s, uint32_t *out) {
+    uint32_t v = 0;
+    int any = 0;
+    while (*s >= '0' && *s <= '9') {
+        any = 1;
+        v = v * 10u + (uint32_t) (*s - '0');
+        if (v > 65535u) return -1;
+        s++;
+    }
+    if (!any) return -1;
+    *out = v;
+    return 0;
+}
+
+void display_policy_init_defaults(void) {
+    g_pol.width      = 2560;
+    g_pol.height     = 1440;
+    g_pol.refresh_hz = 185;
+    g_pol.label[0]   = 'p';
+    g_pol.label[1]   = 'r';
+    g_pol.label[2]   = 'i';
+    g_pol.label[3]   = 'm';
+    g_pol.label[4]   = 'a';
+    g_pol.label[5]   = 'r';
+    g_pol.label[6]   = 'y';
+    g_pol.label[7]   = '\0';
+    g_pol.from_file  = 0;
+}
+
+const struct display_policy *display_policy_get(void) { return &g_pol; }
+
+int display_policy_parse(const char *buf, size_t len) {
+    if (!buf) return -1;
+    size_t i = 0;
+    while (i < len) {
+        while (i < len && (buf[i] == '\n' || buf[i] == '\r')) i++;
+        size_t line_start = i;
+        while (i < len && buf[i] != '\n' && buf[i] != '\r') i++;
+        size_t line_end = i;
+
+        const char *line = buf + line_start;
+        size_t L = line_end - line_start;
+        if (L == 0) continue;
+
+        if (line[0] == '#') continue;
+
+        /* trim trailing ws */
+        while (L > 0 && is_space((unsigned char) line[L - 1])) L--;
+        if (L == 0) continue;
+
+        const char *p = skip_ws(line);
+        if (*p == '#' || *p == '\0') continue;
+
+        const char *eq = NULL;
+        for (size_t j = 0; j < L; j++) {
+            if (line[j] == '=') { eq = line + j; break; }
+        }
+        if (!eq) continue;
+
+        const char *ke = eq;
+        while (ke > p && is_space((unsigned char) ke[-1])) ke--;
+        const char *vs = eq + 1;
+        vs = skip_ws(vs);
+        const char *ve = line + L;
+        while (ve > vs && is_space((unsigned char) ve[-1])) ve--;
+
+        size_t vlen = (size_t) (ve - vs);
+        if (vlen == 0) return -1;
+
+        if (key_match(p, "width", 5)) {
+            uint32_t v;
+            if (parse_u32(vs, &v) || v < 320 || v > 16384) return -1;
+            g_pol.width = v;
+        } else if (key_match(p, "height", 6)) {
+            uint32_t v;
+            if (parse_u32(vs, &v) || v < 240 || v > 16384) return -1;
+            g_pol.height = v;
+        } else if (key_match(p, "refresh_hz", 10)) {
+            uint32_t v;
+            if (parse_u32(vs, &v) || v < 30 || v > 360) return -1;
+            g_pol.refresh_hz = v;
+        } else if (key_match(p, "label", 5)) {
+            size_t c = vlen < sizeof(g_pol.label) - 1 ? vlen : sizeof(g_pol.label) - 1;
+            for (size_t t = 0; t < c; t++) g_pol.label[t] = vs[t];
+            g_pol.label[c] = '\0';
+        } else {
+            /* unknown key — skip line for forward compatibility */
+        }
+    }
+    return 0;
+}
+
+void display_policy_try_load_vfs(const char *path) {
+    if (!path) return;
+    struct vnode *v = vfs_lookup(path);
+    if (!v || v->type != VFS_FILE || !v->data || v->size == 0) {
+        kprintf("[display] policy file %s not found — built-in defaults\n", path);
+        return;
+    }
+
+    char stackbuf[512];
+    size_t n = v->size < sizeof(stackbuf) - 1 ? v->size : sizeof(stackbuf) - 1;
+    int64_t r = vfs_read(v, 0, n, stackbuf);
+    if (r <= 0) return;
+    stackbuf[(size_t) r] = '\0';
+
+    struct display_policy backup = g_pol;
+    if (display_policy_parse(stackbuf, (size_t) r) != 0) {
+        g_pol = backup;
+        kprintf("[display] policy parse error in %s — keeping previous\n", path);
+        return;
+    }
+    g_pol.from_file = 1;
+    kprintf("[display] policy from %s: %ux%u @ %u Hz (%s)\n",
+            path,
+            (unsigned) g_pol.width, (unsigned) g_pol.height,
+            (unsigned) g_pol.refresh_hz, g_pol.label);
+}
+
+uint32_t display_policy_apic_timer_hz(void) {
+    uint32_t r = g_pol.refresh_hz;
+    if (r < 30)  r = 60;
+    if (r > 360) r = 360;
+    for (uint32_t mult = 10; mult <= 80; mult++) {
+        uint32_t hz = r * mult;
+        if (hz >= 1000u && hz <= 8000u) return hz;
+    }
+    return r * 10u;
+}
+
+uint32_t display_policy_compositor_hz(void) {
+    uint32_t r = g_pol.refresh_hz;
+    if (r < 30)  r = 30;
+    if (r > 240) r = 240;
+    return r;
+}

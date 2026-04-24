@@ -1,4 +1,5 @@
 #include "display.h"
+#include "display_policy.h"
 
 #include "../kprintf.h"
 #include "../mm/heap.h"
@@ -132,8 +133,19 @@ void display_init(void) {
     dsp.pixels       = shadow;
     dsp.present      = limine_present;
     dsp.present_rect = limine_present_rect;
-    kprintf("[display] limine-fb %ux%u pitch=%u shadow-buffered\n",
-            (unsigned) dsp.width, (unsigned) dsp.height, (unsigned) dsp.pitch);
+
+    display_policy_init_defaults();
+    {
+        const struct display_policy *p = display_policy_get();
+        kprintf("[display] limine-fb %ux%u pitch=%u shadow-buffered\n",
+                (unsigned) dsp.width, (unsigned) dsp.height, (unsigned) dsp.pitch);
+        kprintf("[display] nominal policy %ux%u @ %u Hz (%s) — physical %ux%u\n",
+                (unsigned) p->width, (unsigned) p->height,
+                (unsigned) p->refresh_hz, p->label,
+                (unsigned) dsp.width, (unsigned) dsp.height);
+        if (p->width != dsp.width || p->height != dsp.height)
+            kprintf("[display] note: policy resolution != scanout until KMS/EDID path\n");
+    }
 }
 
 const struct display *display_get(void) { return &dsp; }

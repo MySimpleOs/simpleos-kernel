@@ -32,6 +32,7 @@
 #include "fs/tar.h"
 #include "fs/vfs.h"
 #include "gpu/display.h"
+#include "gpu/display_policy.h"
 #include "pci/pci.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
@@ -220,9 +221,15 @@ void kmain(void) {
     compositor_frame(COMPOSITOR_DEFAULT_BG);
     kprintf("[boot] compositor demo painted (3 surfaces)\n");
 
-    /* 1200 Hz gives 10 timer ticks per 120 Hz compositor frame, exactly.
-     * Also tightens scheduler preemption granularity for UI responsiveness. */
-    lapic_timer_init(1200);
+    vfs_init();
+    if (initrd_init() == 0) {
+        tar_mount(initrd_bytes(), initrd_size());
+        vfs_dump(NULL, 0);
+        display_policy_try_load_vfs("/etc/display.conf");
+    }
+
+    /* LAPIC rate = integer multiple of configured refresh for stable pacing. */
+    lapic_timer_init(display_policy_apic_timer_hz());
 
     ioapic_init();
     keyboard_init();
@@ -240,24 +247,14 @@ void kmain(void) {
 
     syscall_init();
 
-    vfs_init();
-    if (initrd_init() == 0) {
-        tar_mount(initrd_bytes(), initrd_size());
-        vfs_dump(NULL, 0);
-    }
-
     /* Bootstrap the scheduler around the BSP's current context, then spawn
      * the user-space init program (the shell). Timer IRQ will preempt the
      * BSP into it once sti happens in idle(). */
     static struct thread bsp_thread;
     sched_init(&bsp_thread);
 
-    /* 120 Hz compositor. Damage tracking (Faz 12.5) keeps each frame's
-     * transfer size bounded to the actual dirty rects, so the 120 Hz
-     * guest × 60 Hz host buffer aliasing that forced us to 60 Hz in
-     * Faz 12.4 is no longer bandwidth-dominated — the host only sees
-     * tiny sub-rect updates. */
-    compositor_start(COMPOSITOR_DEFAULT_BG, 120);
+    /* Target frame rate from /etc/display.conf (refresh_hz), capped. */
+    compositor_start(COMPOSITOR_DEFAULT_BG, display_policy_compositor_hz());
 
     spawn_user_demo();
 
