@@ -110,3 +110,47 @@ void vmm_unmap(uint64_t virt, uint64_t size) {
 void mmio_map(uint64_t virt, uint64_t phys, uint64_t size) {
     vmm_map(virt, phys, size, VMM_W | VMM_PCD);
 }
+
+int vmm_virt_to_phys(uint64_t virt, uint64_t *phys_out) {
+    if (!phys_out) return -1;
+
+    uint64_t v = virt;
+    uint64_t *pml4 = pml4_root();
+    uint64_t e4 = pml4[(v >> 39) & 0x1FF];
+    if (!(e4 & PT_PRESENT))
+        return -1;
+    if (e4 & PT_HUGE)
+        return -1; /* 512 GiB — not used */
+
+    uint64_t *pdpt = table_virt(e4);
+    uint64_t e3 = pdpt[(v >> 30) & 0x1FF];
+    if (!(e3 & PT_PRESENT))
+        return -1;
+    if (e3 & PT_HUGE) {
+        /* 1 GiB page: PFN in bits 51:30 */
+        uint64_t base = e3 & 0x000fffffc0000000ull;
+        *phys_out = base + (v & 0x3fffffffull);
+        return 0;
+    }
+
+    uint64_t *pd = table_virt(e3);
+    uint64_t e2 = pd[(v >> 21) & 0x1FF];
+    if (!(e2 & PT_PRESENT))
+        return -1;
+    if (e2 & PT_HUGE) {
+        /* 2 MiB page */
+        uint64_t base = e2 & 0x000fffffffffe000ull;
+        *phys_out = base + (v & 0x1fffffull);
+        return 0;
+    }
+
+    uint64_t *pt = table_virt(e2);
+    uint64_t e1 = pt[(v >> 12) & 0x1FF];
+    if (!(e1 & PT_PRESENT))
+        return -1;
+    if (e1 & PT_HUGE)
+        return -1;
+
+    *phys_out = (e1 & ADDR_MASK) | (v & (PAGE_SIZE - 1));
+    return 0;
+}

@@ -22,3 +22,8 @@ void vmm_unmap(uint64_t virt, uint64_t size);
 /* Legacy wrapper kept so existing callers (acpi.c, apic.c, ioapic.c) do not
  * need to change. Maps writable, cache-disabled — right for device MMIO. */
 void mmio_map(uint64_t virt, uint64_t phys, uint64_t size);
+
+/* Walk the *current* CR3 page tables. Returns 0 on success and sets *phys_out
+ * to the 4 KiB (or huge-page) frame + page offset. Returns -1 if unmapped or
+ * unsupported huge layout. */
+int vmm_virt_to_phys(uint64_t virt, uint64_t *phys_out);

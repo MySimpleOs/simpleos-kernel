@@ -156,15 +156,16 @@ void kmain(void) {
 
     ioapic_init();
     keyboard_init();
-    ioapic_set_irq(KEYBOARD_GSI, KEYBOARD_VECTOR, 0);
-
-    /* PS/2 aux (mouse): enable controller port, wire IRQ 12 → vector. */
     {
+        uint8_t apic_dest = lapic_current_id();
+        ioapic_set_irq(KEYBOARD_GSI, KEYBOARD_VECTOR, apic_dest);
+
+        /* PS/2 aux (mouse): enable controller port, wire IRQ 12 → vector. */
         const struct display *dd = display_get();
         mouse_init(dd ? dd->width : 0, dd ? dd->height : 0);
+        /* Destination must be this CPU's xAPIC ID (not always 0). */
+        ioapic_set_irq(MOUSE_GSI, MOUSE_VECTOR, apic_dest);
     }
-    /* PS/2 aux: many boards wire IRQ12 active-low level; QEMU tolerates it. */
-    ioapic_set_irq_extended(MOUSE_GSI, MOUSE_VECTOR, 0, 1, 1);
     cursor_init();
     /* First compositor_frame ran before the cursor surface existed; repaint
      * once so the pointer is visible without waiting for the compositor thread. */

@@ -55,6 +55,10 @@ void lapic_enable_local(void) {
     lapic_write(LAPIC_TPR, 0);
 }
 
+uint8_t lapic_current_id(void) {
+    return (uint8_t) ((lapic_read(LAPIC_ID) >> 24) & 0xFFu);
+}
+
 void lapic_init(void) {
     uint64_t hhdm_offset = hhdm_request.response ? hhdm_request.response->offset : 0;
     uint64_t lapic_virt  = acpi.lapic_phys + hhdm_offset;

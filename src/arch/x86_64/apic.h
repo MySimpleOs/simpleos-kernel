@@ -25,6 +25,8 @@ enum {
 
 void     lapic_init(void);
 void     lapic_enable_local(void);   /* BSP + APs: enable the current CPU's LAPIC */
+/* xAPIC ID (8 bits) for I/O APIC redirection destination field. */
+uint8_t  lapic_current_id(void);
 uint32_t lapic_read(uint32_t reg);
 void     lapic_write(uint32_t reg, uint32_t value);
 void     lapic_eoi(void);
