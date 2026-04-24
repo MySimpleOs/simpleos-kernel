@@ -23,6 +23,7 @@
 #include "compositor/anim.h"
 #include "compositor/compositor.h"
 #include "compositor/font.h"
+#include "compositor/path.h"
 #include "compositor/cursor.h"
 #include "compositor/gradient.h"
 #include "compositor/surface.h"
@@ -157,6 +158,20 @@ void kmain(void) {
              * semi-transparent to exercise the alpha path. */
             gradient_fill_radial(s2, 0xe060ff80, 0x8015602a,
                                  160, 120, 180);
+            /* Vector paths: cubic + quadratic + close, AA fill + stroke. */
+            {
+                path_t *pv = path_create();
+                if (pv) {
+                    path_move_to(pv, 30,  40);
+                    path_cubic_to(pv, 90,  15, 150, 130, 120, 200);
+                    path_quad_to(pv,  60, 210, 25,  150);
+                    path_line_to(pv,  25,  70);
+                    path_close(pv);
+                    path_stroke_surface(s2, pv, 3, 0xdd204060);
+                    path_fill_surface(s2, pv, 0xc0fff8e8);
+                    path_destroy(pv);
+                }
+            }
             /* s3: linear gradient bottom → top (navy → sky), transparent
              * for alpha blending. */
             gradient_fill_linear(s3, 0xaa1a3080, 0xaa60c0ff,
