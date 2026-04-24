@@ -23,6 +23,7 @@
 #include "compositor/anim.h"
 #include "compositor/compositor.h"
 #include "compositor/cursor.h"
+#include "compositor/gradient.h"
 #include "compositor/surface.h"
 #include "drivers/keyboard.h"
 #include "drivers/mouse.h"
@@ -143,9 +144,29 @@ void kmain(void) {
         struct surface *s2 = surface_create("green", 320, 240);
         struct surface *s3 = surface_create("blue",  320, 240);
         if (s1 && s2 && s3) {
-            surface_clear(s1, 0xffe03a3a);
-            surface_clear(s2, 0xcc30c060);
-            surface_clear(s3, 0xaa3080ff);
+            /* s1: linear gradient (deep red → warm orange), solid-opaque
+             * so the interior hits the SIMD copy fast path. */
+            gradient_fill_linear(s1, 0xffe03a3a, 0xffffaa20,
+                                 0, 0, 319, 239);
+            /* s2: radial gradient (bright green core → forest edge),
+             * semi-transparent to exercise the alpha path. */
+            gradient_fill_radial(s2, 0xe060ff80, 0x8015602a,
+                                 160, 120, 180);
+            /* s3: linear gradient bottom → top (navy → sky), transparent
+             * for alpha blending. */
+            gradient_fill_linear(s3, 0xaa1a3080, 0xaa60c0ff,
+                                 160, 239, 160, 0);
+
+            /* All three surfaces get the Faz 12.7 treatment: 24-px
+             * rounded corners and a soft drop shadow offset 6 px down
+             * and to the right with a 16-px gaussian-ish blur. */
+            surface_set_corner_radius(s1, 24);
+            surface_set_corner_radius(s2, 24);
+            surface_set_corner_radius(s3, 24);
+            surface_set_shadow(s1,  6,  6, 16, 0x000000, 180);
+            surface_set_shadow(s2,  6,  6, 16, 0x000000, 180);
+            surface_set_shadow(s3,  6,  6, 16, 0x000000, 180);
+
             surface_move(s1,  80,  80); surface_set_z(s1, 0);
             surface_move(s2, 260, 160); surface_set_z(s2, 1);
             surface_move(s3, 440, 240); surface_set_z(s3, 2);

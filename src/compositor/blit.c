@@ -1,4 +1,5 @@
 #include "blit.h"
+#include "shadow.h"
 
 #include "../arch/x86_64/simd.h"
 
@@ -198,5 +199,212 @@ void blit_alpha_scissor(const struct blit_dst *dst, const struct rect *scissor,
         }
         drow += dstride;
         srow += sstride;
+    }
+}
+
+/* ==========================================================================
+ * Rounded + shadow variants (Faz 12.7). Scalar inner loops — the hot path
+ * (middle band) still goes through the SIMD fast-paths; only the 2*cr-tall
+ * top/bottom corner bands pay the per-pixel mask cost.
+ * ==========================================================================
+ */
+
+/* Opaque-copy pixel modulated by an 8-bit coverage mask. mask=255 is a
+ * straight copy; mask=0 keeps dst; anything in between alpha-blends src
+ * over dst with the mask acting as src alpha. */
+static inline void copy_masked_px(uint32_t *d, uint32_t s, uint32_t mask) {
+    if (mask == 0)   return;
+    if (mask == 255) { *d = s | 0xff000000u; return; }
+
+    uint32_t inv = 255u - mask;
+    uint32_t sr = (s >> 16) & 0xffu, sg = (s >> 8) & 0xffu, sb = s & 0xffu;
+    uint32_t dv = *d;
+    uint32_t dr = (dv >> 16) & 0xffu, dg = (dv >> 8) & 0xffu, db = dv & 0xffu;
+
+    uint32_t r = mul8(sr, mask) + mul8(dr, inv);
+    uint32_t g = mul8(sg, mask) + mul8(dg, inv);
+    uint32_t b = mul8(sb, mask) + mul8(db, inv);
+    if (r > 255) r = 255;
+    if (g > 255) g = 255;
+    if (b > 255) b = 255;
+    *d = 0xff000000u | (r << 16) | (g << 8) | b;
+}
+
+/* Straight-alpha pixel, further modulated by a coverage mask (0..255).
+ * Matches blit_alpha_scissor's math; the mask multiplies the effective
+ * alpha — so mask=255 leaves behaviour unchanged. */
+static inline void alpha_masked_px(uint32_t *d, uint32_t s,
+                                   uint32_t ga, uint32_t mask) {
+    uint32_t sa = mul8((s >> 24) & 0xffu, ga);
+    sa = mul8(sa, mask);
+    if (sa == 0) return;
+    if (sa == 255) { *d = s | 0xff000000u; return; }
+
+    uint32_t inv = 255u - sa;
+    uint32_t sr = (s >> 16) & 0xffu, sg = (s >> 8) & 0xffu, sb = s & 0xffu;
+    uint32_t dv = *d;
+    uint32_t dr = (dv >> 16) & 0xffu, dg = (dv >> 8) & 0xffu, db = dv & 0xffu;
+
+    uint32_t r = mul8(sr, sa) + mul8(dr, inv);
+    uint32_t g = mul8(sg, sa) + mul8(dg, inv);
+    uint32_t b = mul8(sb, sa) + mul8(db, inv);
+    if (r > 255) r = 255;
+    if (g > 255) g = 255;
+    if (b > 255) b = 255;
+    *d = 0xff000000u | (r << 16) | (g << 8) | b;
+}
+
+/* Choose the copy-row fast path that matches the active ISA baseline. */
+static inline void copy_row_fast(uint32_t *d, const uint32_t *s, int32_t n) {
+    if (simd_has_avx2())      blit_copy_row_avx2(d, s, n);
+    else if (simd_has_sse2()) blit_copy_row_sse2(d, s, n);
+    else {
+        for (int32_t x = 0; x < n; x++) d[x] = s[x] | 0xff000000u;
+    }
+}
+
+static inline void alpha_row_fast(uint32_t *d, const uint32_t *s,
+                                  uint32_t ga, int32_t n) {
+    if (simd_has_avx2())      blit_alpha_row_avx2(d, s, ga, n);
+    else if (simd_has_sse2()) blit_alpha_row_sse2(d, s, ga, n);
+    else {
+        for (int32_t x = 0; x < n; x++) alpha_masked_px(&d[x], s[x], ga, 255);
+    }
+}
+
+void blit_copy_rounded_scissor(const struct blit_dst *dst,
+                               const struct rect *scissor,
+                               int32_t dx, int32_t dy,
+                               const struct blit_src *src,
+                               uint32_t corner_radius) {
+    if (!dst || !dst->pixels || !src || !src->pixels) return;
+
+    if (corner_radius == 0) {
+        blit_copy_scissor(dst, scissor, dx, dy, src);
+        return;
+    }
+
+    int32_t rw, rh, sx, sy;
+    if (!clip_src(dst, scissor, src, &dx, &dy, &rw, &rh, &sx, &sy)) return;
+
+    uint32_t dstride = dst->stride;
+    uint32_t sstride = src->stride;
+    int      surf_w  = (int) src->width;
+    int      surf_h  = (int) src->height;
+    int      cr      = (int) corner_radius;
+
+    uint32_t *drow = dst->pixels + (uint32_t) dy * dstride + (uint32_t) dx;
+    const uint32_t *srow = src->pixels + (uint32_t) sy * sstride + (uint32_t) sx;
+
+    for (int32_t y = 0; y < rh; y++) {
+        int ly = sy + y;
+        int in_corner_row = (ly < cr) || (ly >= surf_h - cr);
+        if (!in_corner_row) {
+            copy_row_fast(drow, srow, rw);
+        } else {
+            for (int32_t x = 0; x < rw; x++) {
+                int lx = sx + x;
+                unsigned char m = shadow_corner_mask(lx, ly,
+                                                     surf_w, surf_h, cr);
+                copy_masked_px(&drow[x], srow[x], m);
+            }
+        }
+        drow += dstride;
+        srow += sstride;
+    }
+}
+
+void blit_alpha_rounded_scissor(const struct blit_dst *dst,
+                                const struct rect *scissor,
+                                int32_t dx, int32_t dy,
+                                const struct blit_src *src,
+                                uint8_t global_alpha,
+                                uint32_t corner_radius) {
+    if (!dst || !dst->pixels || !src || !src->pixels) return;
+    if (global_alpha == 0) return;
+
+    if (corner_radius == 0) {
+        blit_alpha_scissor(dst, scissor, dx, dy, src, global_alpha);
+        return;
+    }
+
+    int32_t rw, rh, sx, sy;
+    if (!clip_src(dst, scissor, src, &dx, &dy, &rw, &rh, &sx, &sy)) return;
+
+    uint32_t dstride = dst->stride;
+    uint32_t sstride = src->stride;
+    int      surf_w  = (int) src->width;
+    int      surf_h  = (int) src->height;
+    int      cr      = (int) corner_radius;
+    uint32_t ga      = global_alpha;
+
+    uint32_t *drow = dst->pixels + (uint32_t) dy * dstride + (uint32_t) dx;
+    const uint32_t *srow = src->pixels + (uint32_t) sy * sstride + (uint32_t) sx;
+
+    for (int32_t y = 0; y < rh; y++) {
+        int ly = sy + y;
+        int in_corner_row = (ly < cr) || (ly >= surf_h - cr);
+        if (!in_corner_row) {
+            alpha_row_fast(drow, srow, ga, rw);
+        } else {
+            for (int32_t x = 0; x < rw; x++) {
+                int lx = sx + x;
+                unsigned char m = shadow_corner_mask(lx, ly,
+                                                     surf_w, surf_h, cr);
+                alpha_masked_px(&drow[x], srow[x], ga, m);
+            }
+        }
+        drow += dstride;
+        srow += sstride;
+    }
+}
+
+void blit_shadow_scissor(const struct blit_dst *dst,
+                         const struct rect *scissor,
+                         int32_t dx, int32_t dy,
+                         const uint8_t *mask_pixels,
+                         uint32_t mask_w, uint32_t mask_h,
+                         uint32_t color, uint8_t global_alpha) {
+    if (!dst || !dst->pixels || !mask_pixels) return;
+    if (global_alpha == 0 || mask_w == 0 || mask_h == 0) return;
+
+    int32_t rw = (int32_t) mask_w;
+    int32_t rh = (int32_t) mask_h;
+    int32_t mx = 0, my = 0;
+    if (!clip_rect(dst, scissor, &dx, &dy, &rw, &rh, &mx, &my)) return;
+
+    uint32_t dstride = dst->stride;
+    uint32_t *drow   = dst->pixels + (uint32_t) dy * dstride + (uint32_t) dx;
+    const uint8_t *mrow = mask_pixels + (size_t) my * mask_w + (size_t) mx;
+
+    uint32_t ga = global_alpha;
+    uint32_t cr = (color >> 16) & 0xffu;
+    uint32_t cg = (color >>  8) & 0xffu;
+    uint32_t cb =  color        & 0xffu;
+
+    for (int32_t y = 0; y < rh; y++) {
+        for (int32_t x = 0; x < rw; x++) {
+            uint32_t m = mrow[x];
+            if (m == 0) continue;
+            uint32_t sa = mul8(m, ga);
+            if (sa == 0) continue;
+
+            uint32_t d = drow[x];
+            uint32_t dr = (d >> 16) & 0xffu;
+            uint32_t dg = (d >>  8) & 0xffu;
+            uint32_t db =  d        & 0xffu;
+
+            uint32_t inv = 255u - sa;
+            uint32_t r = mul8(cr, sa) + mul8(dr, inv);
+            uint32_t g = mul8(cg, sa) + mul8(dg, inv);
+            uint32_t b = mul8(cb, sa) + mul8(db, inv);
+            if (r > 255) r = 255;
+            if (g > 255) g = 255;
+            if (b > 255) b = 255;
+
+            drow[x] = 0xff000000u | (r << 16) | (g << 8) | b;
+        }
+        drow += dstride;
+        mrow += mask_w;
     }
 }

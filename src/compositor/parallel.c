@@ -31,8 +31,11 @@ static volatile uint32_t last_frame_cpus;
 
 /* Compose one band: for each damage rect, intersect with band, clear
  * bg, then blit every surface that overlaps the intersection (z-sorted
- * bottom-to-top). Band → rect intersection keeps the scissor tight so
- * we never touch pixels outside damage. */
+ * bottom-to-top). Per surface the order is shadow → surface body, so
+ * content lands on top of its own halo; surface N's shadow still goes
+ * underneath surface N+1 because z-sort enforces it. Band → rect
+ * intersection keeps the scissor tight so we never touch pixels outside
+ * damage. */
 static void compose_band(uint32_t band_idx) {
     if (band_idx >= ctx.band_count) return;
     struct rect band = ctx.bands[band_idx];
@@ -48,6 +51,27 @@ static void compose_band(uint32_t band_idx) {
             if (!s || !s->pixels)                    continue;
             if (!s->visible || s->alpha == 0)        continue;
 
+            /* Shadow pass — lays down the blurred silhouette first so
+             * the surface body paints on top of it. Cheap to skip when
+             * there's no shadow or the shadow rect misses the sub. */
+            if (s->shadow_blur && s->shadow_alpha && s->shadow_mask) {
+                int32_t shx = s->x + s->shadow_ox - (int32_t) s->shadow_blur;
+                int32_t shy = s->y + s->shadow_oy - (int32_t) s->shadow_blur;
+                struct rect shadow_rect = rect_make(shx, shy,
+                                                    (int32_t) s->shadow_mask_w,
+                                                    (int32_t) s->shadow_mask_h);
+                uint8_t ga_shadow = (uint8_t)
+                    ((uint32_t) s->shadow_alpha * s->alpha / 255u);
+                if (rect_overlaps(&shadow_rect, &sub)) {
+                    blit_shadow_scissor(&ctx.dst, &sub, shx, shy,
+                                        s->shadow_mask,
+                                        s->shadow_mask_w,
+                                        s->shadow_mask_h,
+                                        s->shadow_color,
+                                        ga_shadow);
+                }
+            }
+
             struct rect srect = rect_make(s->x, s->y,
                                           (int32_t) s->width,
                                           (int32_t) s->height);
@@ -59,8 +83,18 @@ static void compose_band(uint32_t band_idx) {
                 .height = s->height,
                 .stride = s->width,
             };
-            if (s->opaque) blit_copy_scissor (&ctx.dst, &sub, s->x, s->y, &src);
-            else           blit_alpha_scissor(&ctx.dst, &sub, s->x, s->y, &src, s->alpha);
+            if (s->corner_radius) {
+                if (s->opaque)
+                    blit_copy_rounded_scissor (&ctx.dst, &sub, s->x, s->y,
+                                               &src, s->corner_radius);
+                else
+                    blit_alpha_rounded_scissor(&ctx.dst, &sub, s->x, s->y,
+                                               &src, s->alpha,
+                                               s->corner_radius);
+            } else {
+                if (s->opaque) blit_copy_scissor (&ctx.dst, &sub, s->x, s->y, &src);
+                else           blit_alpha_scissor(&ctx.dst, &sub, s->x, s->y, &src, s->alpha);
+            }
         }
     }
 }

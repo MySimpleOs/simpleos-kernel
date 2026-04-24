@@ -55,13 +55,29 @@ void compositor_remove(struct surface *s) {
     if (!s) return;
     for (int i = 0; i < slot_count; i++) {
         if (slots[i] == s) {
-            /* Leave a rect-sized hole where the surface was so the next
-             * frame repaints the background (and any surfaces it used to
-             * cover). */
+            /* Leave an effective-rect-sized hole so the next frame
+             * repaints the bg (including the shadow halo area if the
+             * surface had one). */
             if (s->prev_known) {
-                struct rect r = rect_make(s->prev_x, s->prev_y,
-                                          (int32_t) s->prev_w,
-                                          (int32_t) s->prev_h);
+                int32_t px = s->prev_x, py = s->prev_y;
+                int32_t pw = (int32_t) s->prev_w, ph = (int32_t) s->prev_h;
+                int32_t pb = (int32_t) s->prev_shadow_blur;
+                struct rect r;
+                if (s->prev_shadow_blur && s->prev_shadow_alpha) {
+                    int32_t psx = px + s->prev_shadow_ox - pb;
+                    int32_t psy = py + s->prev_shadow_oy - pb;
+                    int32_t psw = pw + 2 * pb;
+                    int32_t psh = ph + 2 * pb;
+                    int32_t ax0 = px < psx ? px : psx;
+                    int32_t ay0 = py < psy ? py : psy;
+                    int32_t ax1a = px + pw, ax1b = psx + psw;
+                    int32_t ay1a = py + ph, ay1b = psy + psh;
+                    int32_t ax1 = ax1a > ax1b ? ax1a : ax1b;
+                    int32_t ay1 = ay1a > ay1b ? ay1a : ay1b;
+                    r = rect_make(ax0, ay0, ax1 - ax0, ay1 - ay0);
+                } else {
+                    r = rect_make(px, py, pw, ph);
+                }
                 damage_add(&carry_damage, r);
             }
             for (int j = i; j < slot_count - 1; j++) slots[j] = slots[j + 1];
@@ -120,16 +136,22 @@ static void sort_indices(int *idx) {
 }
 
 static int surface_changed(const struct surface *s) {
-    if (!s->prev_known)                return 1;
-    if (s->pixels_dirty)               return 1;
-    if (s->x      != s->prev_x)        return 1;
-    if (s->y      != s->prev_y)        return 1;
-    if (s->width  != s->prev_w)        return 1;
-    if (s->height != s->prev_h)        return 1;
-    if (s->z      != s->prev_z)        return 1;
-    if (s->alpha  != s->prev_alpha)    return 1;
-    if (s->visible!= s->prev_visible)  return 1;
-    if (s->opaque != s->prev_opaque)   return 1;
+    if (!s->prev_known)                        return 1;
+    if (s->pixels_dirty)                       return 1;
+    if (s->x      != s->prev_x)                return 1;
+    if (s->y      != s->prev_y)                return 1;
+    if (s->width  != s->prev_w)                return 1;
+    if (s->height != s->prev_h)                return 1;
+    if (s->z      != s->prev_z)                return 1;
+    if (s->alpha  != s->prev_alpha)            return 1;
+    if (s->visible!= s->prev_visible)          return 1;
+    if (s->opaque != s->prev_opaque)           return 1;
+    if (s->corner_radius != s->prev_corner_radius) return 1;
+    if (s->shadow_ox     != s->prev_shadow_ox)     return 1;
+    if (s->shadow_oy     != s->prev_shadow_oy)     return 1;
+    if (s->shadow_blur   != s->prev_shadow_blur)   return 1;
+    if (s->shadow_color  != s->prev_shadow_color)  return 1;
+    if (s->shadow_alpha  != s->prev_shadow_alpha)  return 1;
     return 0;
 }
 
@@ -167,12 +189,33 @@ void compositor_frame(uint32_t bg_xrgb) {
         struct surface *s = slots[i];
         if (!s) continue;
 
-        struct rect curr = rect_make(s->x, s->y,
-                                     (int32_t) s->width,
-                                     (int32_t) s->height);
-        struct rect prev = rect_make(s->prev_x, s->prev_y,
-                                     (int32_t) s->prev_w,
-                                     (int32_t) s->prev_h);
+        /* Current geometry includes shadow halo so moving a surface
+         * damages the area its shadow previously occupied. prev rect is
+         * rebuilt from the prev_shadow_* snapshot to keep the damage
+         * math symmetric even when shadow params change mid-flight. */
+        struct rect curr = surface_effective_rect(s);
+
+        int32_t prev_x0 = s->prev_x;
+        int32_t prev_y0 = s->prev_y;
+        int32_t prev_w  = (int32_t) s->prev_w;
+        int32_t prev_h  = (int32_t) s->prev_h;
+        int32_t prev_b  = (int32_t) s->prev_shadow_blur;
+        struct rect prev;
+        if (s->prev_shadow_blur && s->prev_shadow_alpha) {
+            int32_t psx = prev_x0 + s->prev_shadow_ox - prev_b;
+            int32_t psy = prev_y0 + s->prev_shadow_oy - prev_b;
+            int32_t psw = prev_w + 2 * prev_b;
+            int32_t psh = prev_h + 2 * prev_b;
+            int32_t ax0 = prev_x0 < psx ? prev_x0 : psx;
+            int32_t ay0 = prev_y0 < psy ? prev_y0 : psy;
+            int32_t ax1a = prev_x0 + prev_w, ax1b = psx + psw;
+            int32_t ay1a = prev_y0 + prev_h, ay1b = psy + psh;
+            int32_t ax1 = ax1a > ax1b ? ax1a : ax1b;
+            int32_t ay1 = ay1a > ay1b ? ay1a : ay1b;
+            prev = rect_make(ax0, ay0, ax1 - ax0, ay1 - ay0);
+        } else {
+            prev = rect_make(prev_x0, prev_y0, prev_w, prev_h);
+        }
 
         int prev_contrib = s->prev_known &&
                            surface_contributed(s->prev_visible, s->prev_alpha);
@@ -192,6 +235,15 @@ void compositor_frame(uint32_t bg_xrgb) {
         /* Nothing to draw and nothing to present. */
         cs_skipped++;
         return;
+    }
+
+    /* Ensure every surface's shadow mask is current before APs start
+     * touching it. surface_ensure_shadow is a no-op when the cached mask
+     * is already valid or shadow is disabled. Runs on BSP only, so no
+     * locking needed. */
+    for (int i = 0; i < slot_count; i++) {
+        struct surface *s = slots[i];
+        if (s) surface_ensure_shadow(s);
     }
 
     /* ---- phase 2: parallel compose across all CPUs ---- */
@@ -223,16 +275,22 @@ void compositor_frame(uint32_t bg_xrgb) {
     for (int i = 0; i < slot_count; i++) {
         struct surface *s = slots[i];
         if (!s) continue;
-        s->prev_x       = s->x;
-        s->prev_y       = s->y;
-        s->prev_w       = s->width;
-        s->prev_h       = s->height;
-        s->prev_z       = s->z;
-        s->prev_alpha   = s->alpha;
-        s->prev_visible = s->visible;
-        s->prev_opaque  = s->opaque;
-        s->prev_known   = 1;
-        s->pixels_dirty = 0;
+        s->prev_x              = s->x;
+        s->prev_y              = s->y;
+        s->prev_w              = s->width;
+        s->prev_h              = s->height;
+        s->prev_z              = s->z;
+        s->prev_alpha          = s->alpha;
+        s->prev_visible        = s->visible;
+        s->prev_opaque         = s->opaque;
+        s->prev_corner_radius  = s->corner_radius;
+        s->prev_shadow_ox      = s->shadow_ox;
+        s->prev_shadow_oy      = s->shadow_oy;
+        s->prev_shadow_blur    = s->shadow_blur;
+        s->prev_shadow_color   = s->shadow_color;
+        s->prev_shadow_alpha   = s->shadow_alpha;
+        s->prev_known          = 1;
+        s->pixels_dirty        = 0;
     }
 }
 
