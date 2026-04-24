@@ -1,6 +1,7 @@
 #include "compositor.h"
 #include "surface.h"
 #include "blit.h"
+#include "anim.h"
 
 #include "../arch/x86_64/apic.h"
 #include "../gpu/display.h"
@@ -146,12 +147,16 @@ static void compositor_thread_body(void *arg) {
     uint64_t tsc_per_us = tsc_hz / 1000000ull;
     if (!tsc_per_us) tsc_per_us = 1;
 
+    fx16     dt_fx = fx_div(FX_ONE, FX_FROM_INT(thread_args.target_hz));
+
     uint64_t next    = timer_ticks + fpt;
     uint32_t window_count = 0;
     uint64_t window_sum   = 0;
 
     for (;;) {
         while ((uint64_t) timer_ticks < next) thread_yield();
+
+        anim_tick_all(dt_fx);
 
         uint64_t t0 = rdtsc();
         compositor_frame(thread_args.bg);

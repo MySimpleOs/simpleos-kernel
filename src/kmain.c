@@ -19,6 +19,7 @@
 #include "arch/x86_64/serial.h"
 #include "arch/x86_64/smp.h"
 #include "arch/x86_64/syscall.h"
+#include "compositor/anim.h"
 #include "compositor/compositor.h"
 #include "compositor/surface.h"
 #include "drivers/keyboard.h"
@@ -129,24 +130,46 @@ void kmain(void) {
      * pmm + active VMM (Limine-installed page tables) are all it needs. */
     heap_init();
 
-    /* Faz 12.1 demo: three overlapping surfaces on a dark-navy desktop.
-     * No thread yet (Faz 12.2) — we just composite twice so both VirtIO
-     * buffers hold the same frame and swaps don't reveal garbage. */
+    /* Faz 12.3 demo: three overlapping surfaces animated by the spring
+     * + easing engine. s1.x springs back and forth, s2.y eases with
+     * out-back bounce, s3.alpha pulses with a linear loop. The compositor
+     * thread's tick_all(dt) advances these every frame before blitting. */
     compositor_init();
     {
         struct surface *s1 = surface_create("red",   320, 240);
         struct surface *s2 = surface_create("green", 320, 240);
         struct surface *s3 = surface_create("blue",  320, 240);
         if (s1 && s2 && s3) {
-            surface_clear(s1, 0xffe03a3a);   /* opaque red    */
-            surface_clear(s2, 0xcc30c060);   /* 80% alpha green */
-            surface_clear(s3, 0xaa3080ff);   /* 67% alpha blue  */
+            surface_clear(s1, 0xffe03a3a);
+            surface_clear(s2, 0xcc30c060);
+            surface_clear(s3, 0xaa3080ff);
             surface_move(s1,  80,  80); surface_set_z(s1, 0);
             surface_move(s2, 260, 160); surface_set_z(s2, 1);
             surface_move(s3, 440, 240); surface_set_z(s3, 2);
             compositor_add(s1);
             compositor_add(s2);
             compositor_add(s3);
+
+            struct anim *a_x  = anim_new();
+            struct anim *a_y  = anim_new();
+            struct anim *a_al = anim_new();
+            /* Near-critical damping (k=60 → crit≈15.5), so spring slides
+             * without visible overshoot. Smaller sweep keeps surfaces
+             * fully on screen at all times. */
+            anim_spring(a_x, FX_FROM_INT(80), FX_FROM_INT(500),
+                        FX_FROM_INT(60), FX_FROM_INT(16));
+            anim_bind_i32(a_x, &s1->x, FX_ONE, 0, 0, 1200);
+            anim_set_loop(a_x, 1);
+
+            anim_ease(a_y, FX_FROM_INT(160), FX_FROM_INT(360),
+                      FX_FROM_INT(3), EASE_IN_OUT_CUBIC);
+            anim_bind_i32(a_y, &s2->y, FX_ONE, 0, 0, 700);
+            anim_set_loop(a_y, 1);
+
+            anim_ease(a_al, FX_FROM_INT(100), FX_FROM_INT(230),
+                      FX_FROM_INT(3), EASE_IN_OUT_CUBIC);
+            anim_bind_u8(a_al, &s3->alpha, FX_ONE, 0, 0, 255);
+            anim_set_loop(a_al, 1);
         }
     }
     compositor_frame(COMPOSITOR_DEFAULT_BG);
