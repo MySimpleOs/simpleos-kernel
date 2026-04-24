@@ -221,22 +221,17 @@ void compositor_frame(uint32_t bg_xrgb) {
         }
     }
 
-    /* ---- phase 3: full-screen present ---- */
-    /* Why full-screen and not the damage bbox? With sub-rect
-     * TRANSFER_TO_HOST_2D the guest backing is read between QEMU's
-     * display-refresh ticks; any subtle race (partial iov_to_buf copy,
-     * display thread vs. IO thread lock interleave in some QEMU
-     * builds, virgl path for -vga virtio, etc.) surfaces as an edge
-     * of the moved surface flickering in and out. Users reported the
-     * bottom of moving surfaces disappearing and coming back — the
-     * classic visible tear signature.
-     *
-     * Full-screen TRANSFER + FLUSH every frame removes sub-rect as a
-     * variable entirely. At 1280x800 the backing is 4 MiB; at 120 Hz
-     * that's 480 MiB/s into QEMU's iov path — comfortable. CPU
-     * compose stays cheap because the per-rect scissor blit in phase
-     * 2 still only touches dirty pixels. */
-    display_present();
+    /* ---- phase 3: publish damage bbox to the front buffer ---- */
+    /* display_present_rect walks the backend's "publish" path: on
+     * Limine FB it memcpy's shadow → hw_fb for the rect; on virtio-gpu
+     * it syncs shadow → backing + TRANSFER+FLUSH. Partial publish is
+     * safe because the non-damage pixels in the front buffer already
+     * hold the previous frame's final composite — nothing we write
+     * would contradict what's there. Full-screen publish was tried
+     * (atomicity argument) but the Limine-FB hw_fb is write-combined
+     * / uncached and full-frame memcpy cost 30 ms+, blowing the 8.3 ms
+     * frame budget at 120 Hz. Rect publish brings it back to ~2 ms. */
+    display_present_rect(damage_bbox(&dmg));
 
     /* ---- phase 4: snapshot prev state + clear dirty bits ---- */
     for (int i = 0; i < slot_count; i++) {

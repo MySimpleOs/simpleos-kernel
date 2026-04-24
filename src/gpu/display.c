@@ -2,6 +2,8 @@
 #include "virtio_gpu.h"
 
 #include "../kprintf.h"
+#include "../mm/heap.h"
+#include "../panic.h"
 
 #include <limine.h>
 #include <stdint.h>
@@ -11,35 +13,143 @@ extern volatile struct limine_framebuffer_request framebuffer_request;
 
 static struct display dsp;
 
+/* Software shadow buffer. Compose always writes here, never into the
+ * host-visible framebuffer. Every present() publishes the shadow to the
+ * hardware surface in one tight memcpy, then (for virtio) pushes to
+ * the host side. This guarantees the host-visible surface is only ever
+ * updated in a single contiguous operation per frame — no
+ * CPU-midway-through-compose tearing, regardless of what refresh thread
+ * QEMU (or real hardware) runs underneath us. */
+static uint32_t *shadow          = NULL;
+static uint32_t *hw_pixels       = NULL;      /* real front buffer         */
+static uint32_t  shadow_stride   = 0;         /* pixels per row            */
+static uint32_t  hw_stride       = 0;
+
+/* Scoped interrupt disable. Publish MUST be atomic from the host-side
+ * display's point of view: if the kernel thread driving the memcpy
+ * gets preempted halfway, the host sees (top half = new frame,
+ * bottom half = old frame) for a few milliseconds until we resume.
+ * That is exactly the "bottom flickers, top is stable" symptom users
+ * hit on moving surfaces. Keeping IF down for 1-3 ms per frame is
+ * cheap relative to the visual fix. */
+static inline uint64_t irq_save(void) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq\n\tpopq %0\n\tcli" : "=r"(rflags) :: "memory");
+    return rflags;
+}
+
+static inline void irq_restore(uint64_t rflags) {
+    __asm__ volatile ("pushq %0\n\tpopfq" :: "r"(rflags) : "cc", "memory");
+}
+
+/* rep-movsq row copy. Kernel is -mgeneral-regs-only (no SSE), so SIMD
+ * is off the table; rep movsq saturates the write-combining path on
+ * every x86 we care about, and on ERMS-capable CPUs (everything after
+ * Ivy Bridge) it's close to memory-bandwidth-bound. 4-byte pixel rows
+ * are always 4-byte aligned; we copy 8 bytes per iteration and fall
+ * back to a single movsd for the odd trailing pixel. */
+static inline void row_copy_u32(uint32_t *dst, const uint32_t *src, uint32_t npx) {
+    uint64_t       *d  = (uint64_t *) dst;
+    const uint64_t *s  = (const uint64_t *) src;
+    uint64_t        qw = npx >> 1;
+    uint32_t        tail = npx & 1;
+    __asm__ volatile (
+        "rep movsq"
+        : "+D"(d), "+S"(s), "+c"(qw)
+        :: "memory"
+    );
+    if (tail) {
+        uint32_t       *d32 = (uint32_t *) d;
+        const uint32_t *s32 = (const uint32_t *) s;
+        *d32 = *s32;
+    }
+}
+
+/* Copy `shadow` into `hw_pixels`. Strides may differ (virtio is tight
+ * disp_w, Limine-FB can have its own pitch); we copy per-row. Called
+ * by present() variants right before the host backend sees the frame. */
+static void shadow_publish(void) {
+    if (!shadow || !hw_pixels) return;
+    const uint32_t h = dsp.height;
+    const uint32_t w = dsp.width;
+    const uint32_t *sp = shadow;
+    uint32_t       *hp = hw_pixels;
+    uint64_t flags = irq_save();
+    for (uint32_t y = 0; y < h; y++) {
+        row_copy_u32(hp, sp, w);
+        sp += shadow_stride;
+        hp += hw_stride;
+    }
+    /* sfence drains the write-combining buffer so QEMU's display
+     * emulator, reading guest RAM on its own thread, sees our writes.
+     * Without the fence WC-mapped framebuffer rows can linger in the
+     * CPU's WCB and the host draws a stale half-frame. */
+    __asm__ volatile ("sfence" ::: "memory");
+    irq_restore(flags);
+}
+
 static void limine_present(void) {
-    /* Direct framebuffer writes are visible immediately; no host-side
-     * copy needed. Single buffer, no swap. */
+    shadow_publish();
 }
 
 static void virtio_present(void) {
+    shadow_publish();
     virtio_gpu_present();
-    /* Single-buffer path now: dsp.pixels points at buffer 0 and never
-     * changes, but keep the assignment so a future triple-buffer or
-     * ring-buffer backend can swap freely without touching callers. */
-    dsp.pixels = virtio_gpu_backbuffer();
+}
+
+static void limine_present_rect(struct rect r) {
+    /* Direct FB: partial present is free — the hardware sees whatever
+     * we wrote. But we still need to publish the shadow; copy only the
+     * rect to keep the writeback bandwidth low. IRQs off for the
+     * duration so we can't get preempted mid-rect (see shadow_publish
+     * rationale). */
+    if (!shadow || !hw_pixels) return;
+    if (r.w <= 0 || r.h <= 0) return;
+    int32_t x0 = r.x > 0 ? r.x : 0;
+    int32_t y0 = r.y > 0 ? r.y : 0;
+    int32_t x1 = r.x + r.w < (int32_t) dsp.width  ? r.x + r.w : (int32_t) dsp.width;
+    int32_t y1 = r.y + r.h < (int32_t) dsp.height ? r.y + r.h : (int32_t) dsp.height;
+    if (x1 <= x0 || y1 <= y0) return;
+
+    uint32_t rw    = (uint32_t) (x1 - x0);
+    uint64_t flags = irq_save();
+    for (int32_t y = y0; y < y1; y++) {
+        const uint32_t *sp = shadow    + (uint32_t) y * shadow_stride + (uint32_t) x0;
+        uint32_t       *hp = hw_pixels + (uint32_t) y * hw_stride     + (uint32_t) x0;
+        row_copy_u32(hp, sp, rw);
+    }
+    __asm__ volatile ("sfence" ::: "memory");
+    irq_restore(flags);
 }
 
 static void virtio_present_rect(struct rect r) {
+    shadow_publish();   /* full publish — virtio backing must match shadow */
     if (r.w <= 0 || r.h <= 0) return;
     virtio_gpu_present_rect(r.x, r.y, (uint32_t) r.w, (uint32_t) r.h);
-    dsp.pixels = virtio_gpu_backbuffer();
+}
+
+static void alloc_shadow(void) {
+    size_t bytes = (size_t) dsp.width * (size_t) dsp.height * 4u;
+    shadow = (uint32_t *) kmalloc(bytes);
+    if (!shadow) panic("display: shadow kmalloc failed");
+    for (size_t i = 0; i < (size_t) dsp.width * (size_t) dsp.height; i++) shadow[i] = 0;
+    shadow_stride = dsp.width;           /* tight-packed                    */
 }
 
 void display_init(void) {
     if (virtio_gpu_ready()) {
-        dsp.pixels          = virtio_gpu_backbuffer();
         dsp.width           = virtio_gpu_width();
         dsp.height          = virtio_gpu_height();
         dsp.pitch           = virtio_gpu_pitch();
         dsp.double_buffered = 0;
         dsp.present         = virtio_present;
         dsp.present_rect    = virtio_present_rect;
-        kprintf("[display] backend=virtio-gpu %ux%u pitch=%u single-buffer\n",
+
+        hw_pixels    = virtio_gpu_backbuffer();
+        hw_stride    = dsp.pitch / 4u;
+        alloc_shadow();
+        dsp.pixels   = shadow;
+        kprintf("[display] backend=virtio-gpu %ux%u pitch=%u shadow-buffered\n",
                 (unsigned) dsp.width, (unsigned) dsp.height, (unsigned) dsp.pitch);
         return;
     }
@@ -48,14 +158,18 @@ void display_init(void) {
         && framebuffer_request.response->framebuffer_count > 0) {
         struct limine_framebuffer *fb =
             framebuffer_request.response->framebuffers[0];
-        dsp.pixels          = (uint32_t *) fb->address;
         dsp.width           = (uint32_t) fb->width;
         dsp.height          = (uint32_t) fb->height;
         dsp.pitch           = (uint32_t) fb->pitch;
         dsp.double_buffered = 0;
         dsp.present         = limine_present;
-        dsp.present_rect    = NULL;   /* direct FB: partial present is free */
-        kprintf("[display] backend=limine-fb %ux%u pitch=%u single-buffered\n",
+        dsp.present_rect    = limine_present_rect;
+
+        hw_pixels    = (uint32_t *) fb->address;
+        hw_stride    = dsp.pitch / 4u;
+        alloc_shadow();
+        dsp.pixels   = shadow;
+        kprintf("[display] backend=limine-fb %ux%u pitch=%u shadow-buffered\n",
                 (unsigned) dsp.width, (unsigned) dsp.height, (unsigned) dsp.pitch);
         return;
     }
@@ -79,8 +193,5 @@ void display_present_rect(struct rect r) {
         dsp.present_rect(r);
         return;
     }
-    /* Backend with no partial-present (Limine FB direct writes — already
-     * visible). Fall back to a generic full present; safe because
-     * present() is a no-op for direct-write backends. */
     if (dsp.present) dsp.present();
 }

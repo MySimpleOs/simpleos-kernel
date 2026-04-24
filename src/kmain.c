@@ -126,11 +126,12 @@ void kmain(void) {
     pci_init();
     gpu_init();
 
-    display_init();
-
-    /* Heap up before compositor: surface pixel buffers come from kmalloc.
-     * pmm + active VMM (Limine-installed page tables) are all it needs. */
+    /* Heap before display so display_init() can kmalloc its software
+     * shadow buffer. Only pmm + active VMM (Limine-installed page
+     * tables) are needed, both live by this point. */
     heap_init();
+
+    display_init();
 
     /* Faz 12.3 demo: three overlapping surfaces animated by the spring
      * + easing engine. s1.x springs back and forth, s2.y eases with
