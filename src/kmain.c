@@ -29,7 +29,6 @@
 #include "fs/tar.h"
 #include "fs/vfs.h"
 #include "gpu/display.h"
-#include "gpu/gpu.h"
 #include "pci/pci.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
@@ -124,7 +123,6 @@ void kmain(void) {
             fb->address);
 
     pci_init();
-    gpu_init();
 
     /* Heap before display so display_init() can kmalloc its software
      * shadow buffer. Only pmm + active VMM (Limine-installed page
@@ -183,7 +181,6 @@ void kmain(void) {
         }
     }
     compositor_frame(COMPOSITOR_DEFAULT_BG);
-    if (display_get()->double_buffered) compositor_frame(COMPOSITOR_DEFAULT_BG);
     kprintf("[boot] compositor demo painted (3 surfaces)\n");
 
     /* 1200 Hz gives 10 timer ticks per 120 Hz compositor frame, exactly.

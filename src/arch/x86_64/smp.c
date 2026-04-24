@@ -19,11 +19,12 @@ static struct cpu_local *cpus       = NULL;
 static uint64_t          cpu_count  = 0;
 static uint64_t          online     = 0;    /* updated atomically            */
 
-/* Entered by each application processor after Limine brings it to long mode
- * with paging on. We are still on a Limine-provided stack; we immediately
- * switch to our per-CPU stack, reload GDT/IDT, enable the local APIC, and
- * mark ourselves online. No interrupts here — a per-CPU TSS is needed
- * before APs can safely take IRQs, and that comes later. */
+/* Entered by each application processor after Limine brings it to long
+ * mode with paging on. Switch to per-CPU stack, reload GDT/IDT, enable
+ * the local APIC, mark online, then jump into the compositor worker
+ * loop — APs spend their life there, consuming tiles whenever the BSP
+ * bumps the work epoch. Interrupts stay off on APs: they don't own a
+ * TSS yet and the worker is cooperative on a tight atomic. */
 static void ap_entry(struct limine_smp_info *info) {
     struct cpu_local *me = (struct cpu_local *) info->extra_argument;
 
@@ -37,6 +38,8 @@ static void ap_entry(struct limine_smp_info *info) {
 
     __atomic_add_fetch(&online, 1, __ATOMIC_RELEASE);
 
+    /* Never returns. If it ever does (defensive), park in hlt. */
+    compositor_ap_worker(me->cpu_id);
     for (;;) {
         __asm__ volatile ("cli; hlt");
     }

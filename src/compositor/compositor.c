@@ -4,8 +4,10 @@
 #include "anim.h"
 #include "cursor.h"
 #include "damage.h"
+#include "parallel.h"
 
 #include "../arch/x86_64/apic.h"
+#include "../arch/x86_64/smp.h"
 #include "../gpu/display.h"
 #include "../kprintf.h"
 #include "../sched/thread.h"
@@ -192,34 +194,18 @@ void compositor_frame(uint32_t bg_xrgb) {
         return;
     }
 
-    /* ---- phase 2: scissor-clipped clear + blit per damage rect ---- */
+    /* ---- phase 2: parallel compose across all CPUs ---- */
+    /* Build the z-sorted pointer array once on BSP; parallel_compose
+     * then dispatches horizontal bands of the damage bbox to every
+     * online CPU (BSP included). APs pick up their share through the
+     * epoch + atomic-tile dispatcher in parallel.c. */
     int idx[COMPOSITOR_MAX_SURFACES];
     sort_indices(idx);
 
-    for (int ri = 0; ri < dmg.count; ri++) {
-        struct rect r = dmg.rects[ri];
-        blit_fill_scissor(&dst, &r, r.x, r.y, r.w, r.h, bg_xrgb);
+    struct surface *z_sorted[COMPOSITOR_MAX_SURFACES];
+    for (int i = 0; i < slot_count; i++) z_sorted[i] = slots[idx[i]];
 
-        for (int i = 0; i < slot_count; i++) {
-            struct surface *s = slots[idx[i]];
-            if (!s || !s->pixels)                     continue;
-            if (!s->visible || s->alpha == 0)         continue;
-
-            struct rect srect = rect_make(s->x, s->y,
-                                          (int32_t) s->width,
-                                          (int32_t) s->height);
-            if (!rect_overlaps(&srect, &r)) continue;
-
-            struct blit_src src = {
-                .pixels = s->pixels,
-                .width  = s->width,
-                .height = s->height,
-                .stride = s->width,
-            };
-            if (s->opaque) blit_copy_scissor (&dst, &r, s->x, s->y, &src);
-            else           blit_alpha_scissor(&dst, &r, s->x, s->y, &src, s->alpha);
-        }
-    }
+    parallel_compose(dst, &dmg, z_sorted, slot_count, bg_xrgb);
 
     /* ---- phase 3: publish damage bbox to the front buffer ---- */
     /* display_present_rect walks the backend's "publish" path: on
@@ -314,8 +300,10 @@ static void compositor_thread_body(void *arg) {
             cs_avg_us    = (uint32_t) (window_sum / window_count);
             window_sum   = 0;
             window_count = 0;
+            struct parallel_stats ps;
+            parallel_get_stats(&ps);
             kprintf("[compositor] fps=%u last=%uus avg=%uus max=%uus drops=%u "
-                    "dmg=%u/%upx skip=%u\n",
+                    "dmg=%u/%upx skip=%u cpus=%u bsp-tiles=%u ap-tiles=%u\n",
                     (unsigned) thread_args.target_hz,
                     (unsigned) cs_last_us,
                     (unsigned) cs_avg_us,
@@ -323,7 +311,10 @@ static void compositor_thread_body(void *arg) {
                     (unsigned) cs_drops,
                     (unsigned) cs_damage_rects,
                     (unsigned) cs_damage_px,
-                    (unsigned) cs_skipped);
+                    (unsigned) cs_skipped,
+                    (unsigned) ps.frame_cpus,
+                    (unsigned) ps.bsp_tiles,
+                    (unsigned) ps.ap_tiles);
             cs_max_us = 0;
             cs_skipped = 0;
         }

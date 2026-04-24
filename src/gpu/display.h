@@ -5,22 +5,21 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Kernel's view of a 2D display backend. Pixel format is always 32-bit
- * XRGB, pitch in bytes. `pixels` points at the current back buffer — for
- * the single-buffer scanout backend it never changes, but keep
- * re-reading from display_get() to stay forward-compatible with a
- * future ring-buffer backend.
+/* Kernel's view of the CPU-rendered 2D display.
  *
- * `present_rect` is an optional backend entry point that pushes only a
- * sub-region of the back buffer to the scanout. Backends that don't
- * support partial present leave it NULL; the public wrapper falls back
- * to the full-screen `present` in that case. */
+ * `pixels` is the compositor's write target — always a software shadow
+ * buffer. Compose goes here, then display_present[_rect]() publishes the
+ * shadow onto the host-visible Limine framebuffer in one IRQ-off
+ * rep-movsq memcpy + sfence. The shadow-then-publish model is what
+ * kept moving surfaces tear-free at 120 Hz (Faz 12.5.4).
+ *
+ * Pixel format: 32-bit XRGB (little-endian: B G R X bytes). Pitch is in
+ * bytes; stride in pixels is pitch / 4. */
 struct display {
     uint32_t *pixels;
     uint32_t  width;
     uint32_t  height;
     uint32_t  pitch;
-    int       double_buffered;            /* 1 if present() flips buffers  */
     void    (*present)(void);
     void    (*present_rect)(struct rect r);
 };
@@ -28,10 +27,9 @@ struct display {
 void                 display_init(void);
 const struct display *display_get(void);
 
-/* Flush the entire back buffer to the scanout. No-op for single-buffer
- * backends (Limine framebuffer fallback). */
+/* Publish the entire shadow to the hardware framebuffer. */
 void                 display_present(void);
 
-/* Flush only `r` (in display coords) to the scanout. Falls back to a
- * full present() when the backend has no partial-present path. */
+/* Publish only `r` (in display coords). Cheapest path the compositor
+ * takes: one rect = one tight memcpy, bounded by damage bbox. */
 void                 display_present_rect(struct rect r);
