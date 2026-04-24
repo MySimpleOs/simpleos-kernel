@@ -2,6 +2,7 @@
 #include "apic.h"
 #include "gdt.h"
 #include "idt.h"
+#include "simd.h"
 
 #include "../../kprintf.h"
 #include "../../mm/heap.h"
@@ -35,6 +36,7 @@ static void ap_entry(struct limine_smp_info *info) {
     gdt_load();
     idt_load();
     lapic_enable_local();
+    simd_cpu_init(0);
 
     __atomic_add_fetch(&online, 1, __ATOMIC_RELEASE);
 

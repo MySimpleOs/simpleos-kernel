@@ -1,5 +1,7 @@
 #include "blit.h"
 
+#include "../arch/x86_64/simd.h"
+
 #include <stdint.h>
 #include <stddef.h>
 
@@ -102,6 +104,22 @@ void blit_copy_scissor(const struct blit_dst *dst, const struct rect *scissor,
     uint32_t *drow = dst->pixels + (uint32_t) dy * dstride + (uint32_t) dx;
     const uint32_t *srow = src->pixels + (uint32_t) sy * sstride + (uint32_t) sx;
 
+    if (simd_has_avx2()) {
+        for (int32_t y = 0; y < rh; y++) {
+            blit_copy_row_avx2(drow, srow, rw);
+            drow += dstride;
+            srow += sstride;
+        }
+        return;
+    }
+    if (simd_has_sse2()) {
+        for (int32_t y = 0; y < rh; y++) {
+            blit_copy_row_sse2(drow, srow, rw);
+            drow += dstride;
+            srow += sstride;
+        }
+        return;
+    }
     for (int32_t y = 0; y < rh; y++) {
         for (int32_t x = 0; x < rw; x++) drow[x] = srow[x] | 0xff000000u;
         drow += dstride;
@@ -134,6 +152,23 @@ void blit_alpha_scissor(const struct blit_dst *dst, const struct rect *scissor,
     uint32_t *drow = dst->pixels + (uint32_t) dy * dstride + (uint32_t) dx;
     const uint32_t *srow = src->pixels + (uint32_t) sy * sstride + (uint32_t) sx;
     uint32_t ga = global_alpha;
+
+    if (simd_has_avx2()) {
+        for (int32_t y = 0; y < rh; y++) {
+            blit_alpha_row_avx2(drow, srow, ga, rw);
+            drow += dstride;
+            srow += sstride;
+        }
+        return;
+    }
+    if (simd_has_sse2()) {
+        for (int32_t y = 0; y < rh; y++) {
+            blit_alpha_row_sse2(drow, srow, ga, rw);
+            drow += dstride;
+            srow += sstride;
+        }
+        return;
+    }
 
     for (int32_t y = 0; y < rh; y++) {
         for (int32_t x = 0; x < rw; x++) {

@@ -53,6 +53,14 @@ $(BUILD_DIR)/%.o: $(SRC)/%.c | $(BUILD_DIR)/include/limine.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# SIMD fast-paths opt back into XMM/YMM. -mgeneral-regs-only forbids the
+# intrinsic headers from emitting vector ops, so strip it for this TU and
+# turn SSE2+AVX2 on explicitly. CR0/CR4/XCR0 are set per-CPU at boot
+# (arch/x86_64/simd.c) so these instructions are legal at run time.
+$(BUILD_DIR)/compositor/blit_simd.o: $(SRC)/compositor/blit_simd.c | $(BUILD_DIR)/include/limine.h
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -mgeneral-regs-only,$(CFLAGS)) -msse2 -c $< -o $@
+
 $(BUILD_DIR)/%.o: $(SRC)/%.S
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@

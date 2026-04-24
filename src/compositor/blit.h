@@ -57,3 +57,19 @@ void blit_alpha(const struct blit_dst *dst, int32_t dx, int32_t dy,
 void blit_alpha_scissor(const struct blit_dst *dst, const struct rect *scissor,
                         int32_t dx, int32_t dy,
                         const struct blit_src *src, uint8_t global_alpha);
+
+/* ---- SIMD row fast-paths (see compositor/blit_simd.c) ---------------------
+ *
+ * These compose `n` pixels from `src` onto `dst` using the same math as the
+ * scalar inner loops in blit.c. They live in a TU compiled without
+ * -mgeneral-regs-only (the rest of the kernel bans XMM/YMM use), so the
+ * dispatcher in blit.c calls these only after simd_cpu_init() has enabled
+ * SSE/AVX on the current CPU. `ga` is the per-surface global_alpha in
+ * [0, 255]; `n` is the pixel count (may be 0).
+ */
+void blit_copy_row_sse2(uint32_t *dst, const uint32_t *src, int32_t n);
+void blit_alpha_row_sse2(uint32_t *dst, const uint32_t *src,
+                         uint32_t ga, int32_t n);
+void blit_copy_row_avx2(uint32_t *dst, const uint32_t *src, int32_t n);
+void blit_alpha_row_avx2(uint32_t *dst, const uint32_t *src,
+                         uint32_t ga, int32_t n);

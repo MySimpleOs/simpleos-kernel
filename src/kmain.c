@@ -17,6 +17,7 @@
 #include "arch/x86_64/ioapic.h"
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/serial.h"
+#include "arch/x86_64/simd.h"
 #include "arch/x86_64/smp.h"
 #include "arch/x86_64/syscall.h"
 #include "compositor/anim.h"
@@ -106,6 +107,7 @@ void kmain(void) {
     gdt_init();
     idt_init();
     pic_disable();
+    simd_cpu_init(1);
     pmm_init();
     acpi_init();
     lapic_init();
