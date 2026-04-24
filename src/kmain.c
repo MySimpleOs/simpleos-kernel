@@ -163,7 +163,8 @@ void kmain(void) {
         const struct display *dd = display_get();
         mouse_init(dd ? dd->width : 0, dd ? dd->height : 0);
     }
-    ioapic_set_irq(MOUSE_GSI, MOUSE_VECTOR, 0);
+    /* PS/2 aux: many boards wire IRQ12 active-low level; QEMU tolerates it. */
+    ioapic_set_irq_extended(MOUSE_GSI, MOUSE_VECTOR, 0, 1, 1);
     cursor_init();
     /* First compositor_frame ran before the cursor surface existed; repaint
      * once so the pointer is visible without waiting for the compositor thread. */

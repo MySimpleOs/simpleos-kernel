@@ -20,6 +20,15 @@ typedef struct __attribute__((packed)) {
     uint16_t reserved;
 } ds_msg_header_t;
 
+/* v1 surface ops — wire payload follows this header in IPC; syscall ABI uses
+ * the same numeric ids in rax for the dedicated SYS_DSP_* entry points. */
+enum ds_surface_op {
+    DS_OP_SURFACE_SUBMIT      = 1,
+    DS_OP_SURFACE_WITHDRAW    = 2,
+    DS_OP_SURFACE_PLACE       = 3,
+    DS_OP_SURFACE_DAMAGE_FULL = 4,
+};
+
 enum {
     DS_OK          = 0,
     DS_ERR_INVAL   = -1,

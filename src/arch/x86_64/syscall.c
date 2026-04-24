@@ -1,6 +1,7 @@
 #include "syscall.h"
 #include "../../drivers/keyboard.h"
 #include "../../fs/vfs.h"
+#include "../../gpu/display_server.h"
 #include "../../kprintf.h"
 #include "serial.h"
 #include "../../sched/thread.h"
@@ -70,6 +71,11 @@ enum {
     SYS_CLOSE   = 3,
     SYS_EXIT    = 60,
     SYS_READDIR = 89,     /* arbitrary, not POSIX-standard                   */
+    /* SimpleOS DSP1 / display server — stable numbers for userland binding. */
+    SYS_DSP_SURFACE_SUBMIT       = 502,
+    SYS_DSP_SURFACE_WITHDRAW     = 503,
+    SYS_DSP_SURFACE_PLACE        = 504,
+    SYS_DSP_SURFACE_DAMAGE_FULL  = 505,
 };
 
 static int64_t sys_write(int fd, const char *buf, size_t count) {
@@ -149,6 +155,15 @@ static int64_t sys_readdir(int fd, char *name_buf, size_t buf_size) {
     return (int64_t) (len + 1);
 }
 
+static int64_t sys_dsp_stub(struct syscall_frame *f, uint16_t expected_op) {
+    (void) expected_op;
+    struct thread *t = thread_current();
+    if (!t || !t->is_user) return -1;
+    (void) f;
+    /* Surface handles from user memory + mapping not wired yet — ABI reserved. */
+    return -1;
+}
+
 __attribute__((noreturn))
 static void sys_exit(int code) {
     kprintf("[syscall] sys_exit: user thread requested exit (code=%d)\n", code);
@@ -176,6 +191,18 @@ void syscall_dispatch(struct syscall_frame *f) {
             f->rax = (uint64_t) sys_readdir((int) f->rdi,
                                             (char *) f->rsi,
                                             (size_t) f->rdx);
+            return;
+        case SYS_DSP_SURFACE_SUBMIT:
+            f->rax = (uint64_t) sys_dsp_stub(f, DS_OP_SURFACE_SUBMIT);
+            return;
+        case SYS_DSP_SURFACE_WITHDRAW:
+            f->rax = (uint64_t) sys_dsp_stub(f, DS_OP_SURFACE_WITHDRAW);
+            return;
+        case SYS_DSP_SURFACE_PLACE:
+            f->rax = (uint64_t) sys_dsp_stub(f, DS_OP_SURFACE_PLACE);
+            return;
+        case SYS_DSP_SURFACE_DAMAGE_FULL:
+            f->rax = (uint64_t) sys_dsp_stub(f, DS_OP_SURFACE_DAMAGE_FULL);
             return;
         case SYS_EXIT:
             sys_exit((int) f->rdi);

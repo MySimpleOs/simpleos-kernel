@@ -38,10 +38,11 @@ void ioapic_init(void) {
             (unsigned) max, ioapic_mmio);
 }
 
-void ioapic_set_irq(uint8_t gsi, uint8_t vector, uint8_t destination) {
-    /* Low dword: delivery mode 0 (fixed), dest mode 0 (physical),
-     * polarity 0 (active high), trigger 0 (edge), mask 0, vector. */
-    uint32_t low  = (uint32_t) vector;
+void ioapic_set_irq_extended(uint8_t gsi, uint8_t vector, uint8_t destination,
+                             int level_trigger, int low_active) {
+    uint32_t low = (uint32_t) vector;
+    if (low_active) low |= (1u << 13);      /* polarity: active low */
+    if (level_trigger) low |= (1u << 15);   /* trigger: level */
     uint32_t high = ((uint32_t) destination) << 24;
 
     uint32_t reg = 0x10 + (uint32_t) gsi * 2;
