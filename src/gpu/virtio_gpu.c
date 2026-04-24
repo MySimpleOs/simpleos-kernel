@@ -251,18 +251,15 @@ static void flush_for(uint32_t id) {
 void virtio_gpu_present(void) {
     if (!ready) return;
 
-    uint32_t back = resource_ids[back_idx];
-
-    /* Push guest backing bytes to the host-side resource, re-point the
-     * scanout at it, then flush to make the new frame visible. */
-    transfer_for(back);
-    set_scanout_for(back);
-    flush_for(back);
-
-    /* Previous front is now up for the next draw; swap roles. */
-    int tmp   = front_idx;
-    front_idx = back_idx;
-    back_idx  = tmp;
+    /* Single-resource pipeline: scanout is bound to resource 0 once at
+     * init. Each present pushes the guest backing to the host-side copy
+     * of that same resource and flushes to refresh the display.
+     * Swapping resources with SET_SCANOUT per frame made QEMU's host
+     * display flicker (visible on a 60 Hz monitor even with 60 Hz
+     * guest pacing). The second resource/backing stays allocated and
+     * unused — cheap insurance for a future triple-buffer path. */
+    transfer_for(resource_ids[0]);
+    flush_for(resource_ids[0]);
 }
 
 int virtio_gpu_init(struct pci_device *pci) {
@@ -300,18 +297,17 @@ int virtio_gpu_init(struct pci_device *pci) {
         }
     }
 
-    /* Start with buffer 0 as the scanout — the other is the initial back. */
+    /* Bind scanout 0 → resource 0 exactly once; stays put for the life
+     * of the driver. Guest always draws into buffers[0] and the back
+     * pointer never swaps. See virtio_gpu_present(). */
     front_idx = 0;
-    back_idx  = 1;
-    if (set_scanout_for(resource_ids[front_idx]) != 0) return -1;
+    back_idx  = 0;
+    if (set_scanout_for(resource_ids[0]) != 0) return -1;
 
     ready = 1;
-    kprintf("[virtio-gpu] ready: %ux%u, double-buffered (2x %u KiB), "
-            "front=res%u back=res%u\n",
+    kprintf("[virtio-gpu] ready: %ux%u, single-buffer scanout (%u KiB backing)\n",
             (unsigned) disp_w, (unsigned) disp_h,
-            (unsigned) (buffer_len / 1024),
-            (unsigned) resource_ids[front_idx],
-            (unsigned) resource_ids[back_idx]);
+            (unsigned) (buffer_len / 1024));
     return 0;
 }
 

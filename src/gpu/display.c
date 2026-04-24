@@ -18,9 +18,9 @@ static void limine_present(void) {
 
 static void virtio_present(void) {
     virtio_gpu_present();
-    /* After present the "back" pointer has swapped — refresh the exposed
-     * pixels field so subsequent display_get() callers draw into the new
-     * back buffer. */
+    /* Single-buffer path now: dsp.pixels points at buffer 0 and never
+     * changes, but keep the assignment so a future triple-buffer or
+     * ring-buffer backend can swap freely without touching callers. */
     dsp.pixels = virtio_gpu_backbuffer();
 }
 
@@ -30,9 +30,9 @@ void display_init(void) {
         dsp.width           = virtio_gpu_width();
         dsp.height          = virtio_gpu_height();
         dsp.pitch           = virtio_gpu_pitch();
-        dsp.double_buffered = 1;
+        dsp.double_buffered = 0;
         dsp.present         = virtio_present;
-        kprintf("[display] backend=virtio-gpu %ux%u pitch=%u double-buffered\n",
+        kprintf("[display] backend=virtio-gpu %ux%u pitch=%u single-buffer\n",
                 (unsigned) dsp.width, (unsigned) dsp.height, (unsigned) dsp.pitch);
         return;
     }
