@@ -127,7 +127,7 @@ extern const uint8_t font_noto_symbols2_start[];
 extern const uint8_t font_noto_symbols2_end[];
 
 #define FONT_PX           22
-#define FONT_SDF_PAD      5
+#define FONT_SDF_PAD      4
 #define FONT_ONEDGE       180
 #define FONT_PDIST        36.0f
 #define FONT_SMOOTH       40.0f
@@ -271,27 +271,26 @@ static float sdf_sample(const uint8_t *d, int w, int h, float fx, float fy) {
     return a * (1.0f - ty) + b * ty;
 }
 
-static inline uint32_t mul8x(uint32_t a, uint32_t b) {
-    return (a * b + 128u) / 255u;
+static inline uint32_t mul8_font(uint32_t a, uint32_t b) {
+    uint32_t t = a * b + 128u;
+    return (t + (t >> 8)) >> 8;
 }
 
-static void blend_lcd_px(uint32_t *dst, uint32_t fg,
-                         float ar, float ag, float ab) {
+static void blend_font_px(uint32_t *dst, uint32_t fg, float a) {
+    uint32_t sa = (uint32_t) (a * 255.0f + 0.5f);
+    if (sa == 0) return;
     uint32_t fr = (fg >> 16) & 0xffu, fg_g = (fg >> 8) & 0xffu, fb = fg & 0xffu;
     uint32_t d = *dst;
     uint32_t dr = (d >> 16) & 0xffu, dg = (d >> 8) & 0xffu, db = d & 0xffu;
 
-    uint32_t Ar = (uint32_t) (ar * 255.0f + 0.5f);
-    uint32_t Ag = (uint32_t) (ag * 255.0f + 0.5f);
-    uint32_t Ab = (uint32_t) (ab * 255.0f + 0.5f);
-    if (Ar > 255) Ar = 255;
-    if (Ag > 255) Ag = 255;
-    if (Ab > 255) Ab = 255;
-
-    uint32_t ir = 255u - Ar, ig = 255u - Ag, ib = 255u - Ab;
-    uint32_t r = mul8x(fr, Ar) + mul8x(dr, ir);
-    uint32_t g = mul8x(fg_g, Ag) + mul8x(dg, ig);
-    uint32_t b = mul8x(fb, Ab) + mul8x(db, ib);
+    if (sa >= 255) {
+        *dst = 0xff000000u | (fr << 16) | (fg_g << 8) | fb;
+        return;
+    }
+    uint32_t inv = 255u - sa;
+    uint32_t r = mul8_font(fr, sa) + mul8_font(dr, inv);
+    uint32_t g = mul8_font(fg_g, sa) + mul8_font(dg, inv);
+    uint32_t b = mul8_font(fb, sa) + mul8_font(db, inv);
     if (r > 255) r = 255;
     if (g > 255) g = 255;
     if (b > 255) b = 255;
@@ -361,7 +360,7 @@ static void blit_sdf_glyph(struct surface *s, float xpen, int baseline,
             if (a <= 0.0f) continue;
 
             uint32_t *px = s->pixels + (uint32_t) sy * s->width + (uint32_t) sx;
-            blend_lcd_px(px, fg, a, a, a);
+            blend_font_px(px, fg, a);
         }
     }
 }
@@ -401,17 +400,23 @@ int font_draw_utf8(struct surface *s, int x, int y,
     int asc = 0, desc = 0, linegap = 0;
     stbtt_GetFontVMetrics(&g_sans, &asc, &desc, &linegap);
     int baseline = y + (int) ((float) asc * g_scale + 0.5f);
+    const int line_px = (int) ((float) (asc - desc + linegap) * g_scale + 0.5f);
 
     float xpen = (float) x;
     int prev_cp = -1;
     int prev_fid = -1;
     const char *p = utf8;
 
+    int bb_valid = 0;
+    int32_t bbx0 = 0, bby0 = 0, bbx1 = 0, bby1 = 0;
+
     for (;;) {
         int cp = utf8_decode(&p);
         if (cp < 0) break;
         if (cp == '\r') continue;
         if (cp == '\n') {
+            xpen   = (float) x;
+            baseline += line_px > 0 ? line_px : 1;
             prev_cp = -1;
             prev_fid = -1;
             continue;
@@ -439,6 +444,27 @@ int font_draw_utf8(struct surface *s, int x, int y,
 
         blit_sdf_glyph(s, xpen, baseline, ce, fg_argb);
 
+        {
+            int ipen = (int) xpen;
+            if ((float) ipen > xpen) ipen--;
+            int gx0 = ipen + ce->xoff;
+            int gy0 = baseline + ce->yoff;
+            int gx1 = gx0 + ce->w;
+            int gy1 = gy0 + ce->h;
+            if (!bb_valid) {
+                bbx0 = gx0;
+                bby0 = gy0;
+                bbx1 = gx1;
+                bby1 = gy1;
+                bb_valid = 1;
+            } else {
+                if (gx0 < bbx0) bbx0 = gx0;
+                if (gy0 < bby0) bby0 = gy0;
+                if (gx1 > bbx1) bbx1 = gx1;
+                if (gy1 > bby1) bby1 = gy1;
+            }
+        }
+
         int g = stbtt_FindGlyphIndex((stbtt_fontinfo *) fi, cp);
         int adv = 0, lsb = 0;
         stbtt_GetGlyphHMetrics((stbtt_fontinfo *) fi, g, &adv, &lsb);
@@ -448,6 +474,10 @@ int font_draw_utf8(struct surface *s, int x, int y,
         prev_fid = fid;
     }
 
-    surface_mark_dirty(s);
+    if (bb_valid)
+        surface_mark_dirty_rect(s, bbx0, bby0, bbx1, bby1);
+    else
+        surface_mark_dirty(s);
+
     return (int) (xpen - (float) x + 0.5f);
 }

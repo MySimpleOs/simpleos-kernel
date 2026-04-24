@@ -19,9 +19,21 @@ static const char *skip_ws(const char *p) {
 
 static int key_match(const char *a, const char *b, size_t blen) {
     size_t i = 0;
-    for (; a[i] && i < blen; i++)
-        if (a[i] != b[i]) return 0;
-    return a[i] == '\0' && i == blen;
+    for (; i < blen; i++) {
+        if (!a[i] || a[i] != b[i]) return 0;
+    }
+    /* Line is "key=value…"; key ends at '=', space, or end — not a longer id. */
+    char c = a[i];
+    return c == '\0' || c == '=' || is_space((unsigned char) c);
+}
+
+static int value_match(const char *vs, size_t vlen, const char *lit) {
+    size_t n = 0;
+    while (lit[n]) n++;
+    if (vlen != n) return 0;
+    for (size_t i = 0; i < n; i++)
+        if (vs[i] != lit[i]) return 0;
+    return 1;
 }
 
 static int parse_u32(const char *s, uint32_t *out) {
@@ -51,6 +63,7 @@ void display_policy_init_defaults(void) {
     g_pol.label[5]   = 'r';
     g_pol.label[6]   = 'y';
     g_pol.label[7]   = '\0';
+    g_pol.pointer    = DISPLAY_POINTER_AUTO;
     g_pol.from_file  = 0;
 }
 
@@ -110,11 +123,22 @@ int display_policy_parse(const char *buf, size_t len) {
             size_t c = vlen < sizeof(g_pol.label) - 1 ? vlen : sizeof(g_pol.label) - 1;
             for (size_t t = 0; t < c; t++) g_pol.label[t] = vs[t];
             g_pol.label[c] = '\0';
+        } else if (key_match(p, "pointer", 7)) {
+            if (value_match(vs, vlen, "auto")) g_pol.pointer = DISPLAY_POINTER_AUTO;
+            else if (value_match(vs, vlen, "ps2")) g_pol.pointer = DISPLAY_POINTER_PS2;
+            else if (value_match(vs, vlen, "virtio")) g_pol.pointer = DISPLAY_POINTER_VIRTIO;
+            else return -1;
         } else {
             /* unknown key — skip line for forward compatibility */
         }
     }
     return 0;
+}
+
+static const char *policy_ptr_name(uint8_t p) {
+    if (p == DISPLAY_POINTER_PS2) return "ps2";
+    if (p == DISPLAY_POINTER_VIRTIO) return "virtio";
+    return "auto";
 }
 
 void display_policy_try_load_vfs(const char *path) {
@@ -138,10 +162,11 @@ void display_policy_try_load_vfs(const char *path) {
         return;
     }
     g_pol.from_file = 1;
-    kprintf("[display] policy from %s: %ux%u @ %u Hz (%s)\n",
+    kprintf("[display] policy from %s: %ux%u @ %u Hz (%s) pointer=%s\n",
             path,
             (unsigned) g_pol.width, (unsigned) g_pol.height,
-            (unsigned) g_pol.refresh_hz, g_pol.label);
+            (unsigned) g_pol.refresh_hz, g_pol.label,
+            policy_ptr_name(g_pol.pointer));
 }
 
 uint32_t display_policy_apic_timer_hz(void) {
@@ -158,6 +183,6 @@ uint32_t display_policy_apic_timer_hz(void) {
 uint32_t display_policy_compositor_hz(void) {
     uint32_t r = g_pol.refresh_hz;
     if (r < 30)  r = 30;
-    if (r > 240) r = 240;
+    if (r > 360) r = 360; /* same upper bound as refresh_hz in display.conf */
     return r;
 }

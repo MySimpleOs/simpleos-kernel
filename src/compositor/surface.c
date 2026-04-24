@@ -37,6 +37,8 @@ struct surface *surface_create(const char *name, uint32_t w, uint32_t h) {
     s->visible      = 1;
     s->opaque       = 0;
     s->pixels_dirty = 1;       /* fresh buffer counts as "content changed"  */
+    s->dirty_rect_valid = 0;
+    s->dirty_lx0 = s->dirty_ly0 = s->dirty_lx1 = s->dirty_ly1 = 0;
 
     s->corner_radius = 0;
 
@@ -80,7 +82,8 @@ void surface_clear(struct surface *s, uint32_t argb) {
     if (!s || !s->pixels) return;
     size_t n = (size_t) s->width * (size_t) s->height;
     for (size_t i = 0; i < n; i++) s->pixels[i] = argb;
-    s->pixels_dirty = 1;
+    s->pixels_dirty     = 1;
+    s->dirty_rect_valid = 0;
 }
 
 void surface_move(struct surface *s, int32_t x, int32_t y) {
@@ -156,7 +159,37 @@ struct rect surface_effective_rect(const struct surface *s) {
 }
 
 void surface_mark_dirty(struct surface *s) {
-    if (s) s->pixels_dirty = 1;
+    if (!s) return;
+    s->pixels_dirty       = 1;
+    s->dirty_rect_valid   = 0;
+}
+
+void surface_mark_dirty_rect(struct surface *s,
+                             int32_t lx0, int32_t ly0, int32_t lx1, int32_t ly1) {
+    if (!s || !s->pixels) return;
+    if (lx1 <= lx0 || ly1 <= ly0) return;
+
+    int32_t w = (int32_t) s->width;
+    int32_t h = (int32_t) s->height;
+    if (lx0 < 0) lx0 = 0;
+    if (ly0 < 0) ly0 = 0;
+    if (lx1 > w) lx1 = w;
+    if (ly1 > h) ly1 = h;
+    if (lx1 <= lx0 || ly1 <= ly0) return;
+
+    s->pixels_dirty = 1;
+    if (!s->dirty_rect_valid) {
+        s->dirty_lx0         = lx0;
+        s->dirty_ly0         = ly0;
+        s->dirty_lx1         = lx1;
+        s->dirty_ly1         = ly1;
+        s->dirty_rect_valid  = 1;
+        return;
+    }
+    if (lx0 < s->dirty_lx0) s->dirty_lx0 = lx0;
+    if (ly0 < s->dirty_ly0) s->dirty_ly0 = ly0;
+    if (lx1 > s->dirty_lx1) s->dirty_lx1 = lx1;
+    if (ly1 > s->dirty_ly1) s->dirty_ly1 = ly1;
 }
 
 void surface_ensure_shadow(struct surface *s) {

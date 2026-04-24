@@ -44,6 +44,10 @@ KERNEL_ELF  := $(BUILD_DIR)/simpleos.elf
 FONT_ASSETS := $(CURDIR)/assets/NotoSans-Regular.ttf \
                $(CURDIR)/assets/NotoSansSymbols2-Regular.ttf
 
+CURSOR_INC   := $(SRC)/assets/cursor_default.inc
+CURSOR_PNG   := $(ROOT)/default@2x.png
+CURSOR_PY    := $(ROOT)/scripts/gen_cursor_rgba.py
+
 .PHONY: all clean
 
 all: $(KERNEL_ELF)
@@ -72,6 +76,13 @@ $(BUILD_DIR)/compositor/font.o: $(SRC)/compositor/font.c | $(BUILD_DIR)/include/
 $(BUILD_DIR)/assets/fonts.o: $(SRC)/assets/fonts.S $(FONT_ASSETS) | $(BUILD_DIR)/include/limine.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wa,-I$(CURDIR)/assets -c $< -o $@
+
+$(CURSOR_INC): $(CURSOR_PNG) $(CURSOR_PY)
+	@python3 $(CURSOR_PY) $(CURSOR_PNG)
+
+$(BUILD_DIR)/compositor/cursor.o: $(SRC)/compositor/cursor.c $(CURSOR_INC) | $(BUILD_DIR)/include/limine.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/%.o: $(SRC)/%.S
 	@mkdir -p $(dir $@)

@@ -1,5 +1,5 @@
 #include "gradient.h"
-#include "surface.h"
+#include "surface.h" /* surface_mark_dirty */
 
 #include <stdint.h>
 
@@ -59,7 +59,7 @@ void gradient_fill_linear(struct surface *s,
             uint32_t *row = s->pixels + (size_t) y * w;
             for (int32_t x = 0; x < w; x++) row[x] = a;
         }
-        s->pixels_dirty = 1;
+        surface_mark_dirty(s);
         return;
     }
 
@@ -76,7 +76,7 @@ void gradient_fill_linear(struct surface *s,
             row[x] = lerp_argb(a, b, t);
         }
     }
-    s->pixels_dirty = 1;
+    surface_mark_dirty(s);
 }
 
 void gradient_fill_radial(struct surface *s,
@@ -91,7 +91,7 @@ void gradient_fill_radial(struct surface *s,
             uint32_t *row = s->pixels + (size_t) y * w;
             for (int32_t x = 0; x < w; x++) row[x] = outer;
         }
-        s->pixels_dirty = 1;
+        surface_mark_dirty(s);
         return;
     }
 
@@ -112,5 +112,5 @@ void gradient_fill_radial(struct surface *s,
             row[x] = lerp_argb(inner, outer, t);
         }
     }
-    s->pixels_dirty = 1;
+    surface_mark_dirty(s);
 }

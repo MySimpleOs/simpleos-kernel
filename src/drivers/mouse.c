@@ -1,7 +1,10 @@
 #include "mouse.h"
 
 #include "../arch/x86_64/io.h"
+#include "../gpu/display_policy.h"
+#include "keyboard.h"
 #include "../kprintf.h"
+#include "virtio_tablet.h"
 
 #include <stdint.h>
 
@@ -55,21 +58,23 @@ static uint8_t aux_cmd_ack(uint8_t c) {
     return ps2_read_data();   /* expect 0xFA ACK                      */
 }
 
+static int32_t clamp(int32_t v, int32_t lo, int32_t hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
 /* ---------- public API ------------------------------------------- */
 
-void mouse_init(uint32_t screen_w, uint32_t screen_h) {
-    scr_w  = screen_w  ? screen_w  : 1280;
-    scr_h  = screen_h  ? screen_h  :  800;
-    cur_x  = (int32_t) (scr_w / 2);
-    cur_y  = (int32_t) (scr_h / 2);
-    cur_btn = 0;
-    pkt_i   = 0;
+void mouse_absolute_inject(int32_t x, int32_t y, uint8_t buttons) {
+    cur_x   = clamp(x, 0, (int32_t) scr_w - (int32_t) 1);
+    cur_y   = clamp(y, 0, (int32_t) scr_h - (int32_t) 1);
+    cur_btn = buttons;
+    __atomic_add_fetch(&events, 1, __ATOMIC_RELAXED);
+}
 
+static void mouse_init_ps2_aux(void) {
     /* Enable auxiliary (mouse) port. */
     ps2_cmd(0xA8);
 
-    /* Read current config byte, enable IRQ12 (bit 1) and clear aux
-     * clock disable (bit 5), keep everything else intact. */
     ps2_cmd(0x20);
     uint8_t cfg = ps2_read_data();
     cfg |= (1u << 1);
@@ -77,14 +82,9 @@ void mouse_init(uint32_t screen_w, uint32_t screen_h) {
     ps2_cmd(0x60);
     ps2_write_data(cfg);
 
-    /* Defaults + enable data reporting. Self-test reset omitted: some
-     * QEMU configs throw stray bytes in response and the sequence below
-     * is enough to get motion packets. */
-    uint8_t r0 = aux_cmd_ack(0xF6);     /* set defaults        */
-    uint8_t r1 = aux_cmd_ack(0xF4);     /* enable streaming    */
+    uint8_t r0 = aux_cmd_ack(0xF6);
+    uint8_t r1 = aux_cmd_ack(0xF4);
 
-    /* Drain any leftover bytes (self-test 0xAA etc.) so the first
-     * interrupt we handle begins a fresh packet. */
     for (int i = 0; i < 8; i++) {
         if (!(inb(PS2_STATUS) & PS2_STATUS_OUT)) break;
         (void) inb(PS2_DATA);
@@ -95,20 +95,45 @@ void mouse_init(uint32_t screen_w, uint32_t screen_h) {
             (unsigned) cur_x, (unsigned) cur_y);
 }
 
-static int32_t clamp(int32_t v, int32_t lo, int32_t hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
+void mouse_init(uint32_t screen_w, uint32_t screen_h) {
+    scr_w  = screen_w  ? screen_w  : 1280;
+    scr_h  = screen_h  ? screen_h  :  800;
+    cur_x  = (int32_t) (scr_w / 2);
+    cur_y  = (int32_t) (scr_h / 2);
+    cur_btn = 0;
+    pkt_i   = 0;
+
+    const struct display_policy *pol = display_policy_get();
+    int force_ps2    = (pol->pointer == DISPLAY_POINTER_PS2);
+    int force_virtio = (pol->pointer == DISPLAY_POINTER_VIRTIO);
+    int try_virtio   = force_virtio || (pol->pointer == DISPLAY_POINTER_AUTO);
+
+    if (!force_ps2 && try_virtio && virtio_tablet_probe_and_init(scr_w, scr_h) == 0)
+        return;
+
+    if (force_virtio && !virtio_tablet_active())
+        kprintf("[mouse] pointer=virtio but no virtio-tablet — using ps/2\n");
+
+    mouse_init_ps2_aux();
 }
 
-void mouse_handle_irq(void) {
-    /* Only consume while the aux output buffer still has bytes — the
-     * controller sometimes queues two packets by the time we handle the
-     * first IRQ, and each IRQ does not guarantee exactly one byte. */
+/* max_reads < 0 = no limit (IRQ path). Poll path must be capped or a stuck
+ * controller bit can spin the compositor thread for whole frames (0 FPS). */
+static void mouse_try_consume(int max_reads) {
+    int reads = 0;
     while (inb(PS2_STATUS) & PS2_STATUS_OUT) {
+        if (max_reads >= 0 && reads >= max_reads) break;
+        reads++;
         uint8_t status = inb(PS2_STATUS);
-        if (!(status & PS2_STATUS_AUX)) return;   /* not our byte     */
-        uint8_t b = inb(PS2_DATA);
+        uint8_t b      = inb(PS2_DATA);
+        int aux = (status & PS2_STATUS_AUX) != 0;
+        if (!aux && pkt_i == 0) {
+            if (!(b & (1u << 3))) {
+                keyboard_ps2_handle_byte(b);
+                continue;
+            }
+        }
 
-        /* Resync on a lost byte: header byte always has bit 3 set. */
         if (pkt_i == 0 && !(b & (1u << 3))) continue;
 
         pkt[pkt_i++] = b;
@@ -117,16 +142,13 @@ void mouse_handle_irq(void) {
 
         uint8_t flags = pkt[0];
 
-        /* X and Y are signed 9-bit; bits 4/5 of flags are sign, 6/7 are
-         * overflow (ignore — it means huge motion we didn't keep up with). */
         int32_t dx = (int32_t) pkt[1];
         int32_t dy = (int32_t) pkt[2];
-        if (flags & (1u << 4)) dx |= 0xFFFFFF00u;  /* sign-extend     */
+        if (flags & (1u << 4)) dx |= 0xFFFFFF00u;
         if (flags & (1u << 5)) dy |= 0xFFFFFF00u;
 
-        /* PS/2 Y is inverted (up = positive); flip for screen coords. */
-        cur_x = clamp(cur_x + dx,  0, (int32_t) scr_w - 1);
-        cur_y = clamp(cur_y - dy,  0, (int32_t) scr_h - 1);
+        cur_x = clamp(cur_x + dx,  0, (int32_t) scr_w - (int32_t) 1);
+        cur_y = clamp(cur_y - dy,  0, (int32_t) scr_h - (int32_t) 1);
 
         uint8_t b_state = 0;
         if (flags & 0x01) b_state |= MOUSE_BTN_LEFT;
@@ -136,6 +158,19 @@ void mouse_handle_irq(void) {
 
         __atomic_add_fetch(&events, 1, __ATOMIC_RELAXED);
     }
+}
+
+void mouse_handle_irq(void) {
+    if (virtio_tablet_active()) return;
+    mouse_try_consume(512);
+}
+
+void mouse_poll(void) {
+    if (virtio_tablet_active()) {
+        virtio_tablet_poll();
+        return;
+    }
+    mouse_try_consume(32);
 }
 
 void mouse_get_state(int32_t *x, int32_t *y, uint8_t *buttons) {

@@ -65,22 +65,23 @@ void keyboard_init(void) {
     }
 }
 
-void keyboard_handle_irq(void) {
-    uint8_t sc = inb(PS2_DATA);
+void keyboard_ps2_handle_byte(uint8_t sc) {
     int release = (sc & 0x80) != 0;
     uint8_t code = sc & 0x7F;
 
-    /* Track left/right shift, caps lock. */
     if (code == 0x2A || code == 0x36) { shift_down = !release; return; }
     if (code == 0x3A && !release)     { caps_lock  = !caps_lock;  return; }
 
     if (release) return;
 
     int up = shift_down;
-    /* Caps-lock only flips case of letters. */
     char base = sc_base[code];
     if (caps_lock && base >= 'a' && base <= 'z') up = !up;
 
     char c = up ? sc_shift[code] : base;
     if (c) ring_push(c);
+}
+
+void keyboard_handle_irq(void) {
+    keyboard_ps2_handle_byte(inb(PS2_DATA));
 }

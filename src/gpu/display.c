@@ -117,8 +117,24 @@ void display_init(void) {
     }
 
     struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
-    dsp.width  = (uint32_t) fb->width;
-    dsp.height = (uint32_t) fb->height;
+    uint32_t fbw = (uint32_t) fb->width;
+    uint32_t fbh = (uint32_t) fb->height;
+
+    const struct display_policy *pol = display_policy_get();
+    uint32_t dw = fbw, dh = fbh;
+    if (pol->from_file) {
+        dw = pol->width;
+        dh = pol->height;
+        if (dw > fbw || dh > fbh) {
+            kprintf("[display] policy %ux%u exceeds scanout %ux%u — clamping\n",
+                    (unsigned) dw, (unsigned) dh,
+                    (unsigned) fbw, (unsigned) fbh);
+            if (dw > fbw) dw = fbw;
+            if (dh > fbh) dh = fbh;
+        }
+    }
+    dsp.width  = dw;
+    dsp.height = dh;
 
     uint32_t hw_pitch_bytes = (uint32_t) fb->pitch;
     hw_pixels     = (uint32_t *) fb->address;
@@ -136,20 +152,19 @@ void display_init(void) {
     dsp.present      = limine_present;
     dsp.present_rect = limine_present_rect;
 
-    display_policy_init_defaults();
     {
         const struct display_policy *p = display_policy_get();
-        kprintf("[display] limine-fb %ux%u hw_pitch=%u shadow %ux%u row=%u bytes\n",
-                (unsigned) dsp.width, (unsigned) dsp.height,
+        kprintf("[display] limine scanout %ux%u hw_pitch=%u; compositor %ux%u row=%u bytes\n",
+                (unsigned) fbw, (unsigned) fbh,
                 (unsigned) hw_pitch_bytes,
                 (unsigned) dsp.width, (unsigned) dsp.height,
                 (unsigned) dsp.pitch);
-        kprintf("[display] nominal policy %ux%u @ %u Hz (%s) — physical %ux%u\n",
+        kprintf("[display] policy %ux%u @ %u Hz (%s)%s\n",
                 (unsigned) p->width, (unsigned) p->height,
                 (unsigned) p->refresh_hz, p->label,
-                (unsigned) dsp.width, (unsigned) dsp.height);
-        if (p->width != dsp.width || p->height != dsp.height)
-            kprintf("[display] note: policy resolution != scanout until KMS/EDID path\n");
+                p->from_file ? " (from /etc/display.conf)" : " (defaults until initrd)");
+        if (p->from_file && (p->width != dsp.width || p->height != dsp.height))
+            kprintf("[display] note: compositor size clamped to scanout\n");
     }
 }
 

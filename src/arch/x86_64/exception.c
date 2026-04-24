@@ -2,6 +2,7 @@
 
 #include "../../drivers/keyboard.h"
 #include "../../drivers/mouse.h"
+#include "../../compositor/parallel.h"
 #include "../../kprintf.h"
 #include "../../panic.h"
 #include "../../sched/thread.h"
@@ -82,8 +83,11 @@ void interrupt_dispatch(struct interrupt_frame *frame) {
     if (frame->vector == LAPIC_TIMER_VECTOR) {
         timer_ticks++;
         lapic_eoi();
-        /* Preemption: every tick, hand off to the next runnable thread. */
-        thread_yield();
+        /* Preemption: hand off to the next runnable thread — but not while
+         * the compositor BSP holds the multi-CPU compose barrier; yielding
+         * there starves the barrier and drops to ~1 FPS. */
+        if (!parallel_compose_active())
+            thread_yield();
         return;
     }
 

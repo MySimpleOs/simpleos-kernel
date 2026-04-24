@@ -1,10 +1,8 @@
 #pragma once
 
-/* Mouse cursor overlay — ARGB surface (36×36) with 2× supersampled arrow,
- * soft alpha edges, and drop shadow; hotspot matches the pointed pixel.
- * The compositor thread calls cursor_tick() each frame to sync position
- * from the PS/2 mouse driver.
- */
+/* Mouse cursor overlay — ARGB surface from default@2x.png (downscaled to
+ * 32×32 at build time; see scripts/gen_cursor_rgba.py). Hotspot matches SVG
+ * translate(10,7). compositor thread calls cursor_tick() each frame. */
 
 #include <stdint.h>
 

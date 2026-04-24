@@ -3,16 +3,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* User-facing monitor policy (logical resolution + nominal refresh).
- * Physical framebuffer size remains whatever Limine hands us until EDID/KMS
- * lands; this block drives compositor Hz, LAPIC tick granularity, and boot
- * logs. Loaded from /etc/display.conf on the initrd when present. */
+#define DISPLAY_POINTER_AUTO    0u /* try virtio-tablet, else PS/2 */
+#define DISPLAY_POINTER_PS2     1u
+#define DISPLAY_POINTER_VIRTIO  2u /* require virtio-tablet (QEMU) */
+
+/* Monitor policy: width/height (logical compositor size), refresh_hz, label.
+ * Loaded from /etc/display.conf when initrd is mounted before display_init().
+ * Compositor dimensions use these values when from_file; clamped to Limine
+ * scanout. refresh_hz / label drive LAPIC + compositor pacing. */
 
 struct display_policy {
     uint32_t width;        /* configured horizontal pixels (e.g. 2560) */
     uint32_t height;       /* configured vertical pixels (e.g. 1440)   */
-    uint32_t refresh_hz;   /* nominal refresh (e.g. 185)                */
+    uint32_t refresh_hz;   /* nominal refresh (e.g. 60)                 */
     char     label[48];    /* short name, e.g. "primary"                */
+    uint8_t  pointer;      /* DISPLAY_POINTER_*                         */
     int      from_file;    /* 1 if last load came from VFS              */
 };
 

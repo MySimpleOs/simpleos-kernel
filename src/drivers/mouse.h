@@ -21,7 +21,12 @@ enum {
 };
 
 void mouse_init(uint32_t screen_w, uint32_t screen_h);
+/* Absolute pointer (virtio-tablet): replaces PS/2 deltas for this frame. */
+void mouse_absolute_inject(int32_t x, int32_t y, uint8_t buttons);
 void mouse_handle_irq(void);
+/* Drain PS/2 output (call from compositor each frame); fixes VBox when IRQ12
+ * does not fire for every packet while data still appears in port 0x60. */
+void mouse_poll(void);
 
 /* Snapshot the current cursor state. Out parameters may be NULL. */
 void mouse_get_state(int32_t *x, int32_t *y, uint8_t *buttons);

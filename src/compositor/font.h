@@ -3,9 +3,9 @@
 #include "surface.h"
 #include <stdint.h>
 
-/* stb_truetype-backed text: UTF-8, per-glyph SDF cache, horizontal RGB
- * subpixel compositing. Primary face = Noto Sans (Latin + Turkish); symbols
- * and emoji-plane glyphs use Noto Sans Symbols 2 where available. */
+/* stb_truetype-backed text: UTF-8, per-glyph SDF cache, grayscale coverage.
+ * Embedded faces: Noto Sans + Noto Sans Symbols 2 (hinted TTFs from the
+ * official googlefonts/noto-fonts tree — refresh with scripts/fetch-google-fonts.sh). */
 
 int  font_init(void);
 void font_shutdown(void);

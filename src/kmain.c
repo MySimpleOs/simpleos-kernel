@@ -64,12 +64,13 @@ static void idle(void) {
 extern const uint8_t userdemo_start[];
 extern const uint8_t userdemo_end[];
 
-/* Map demo art from 320×240 design coordinates to actual surface size. */
+/* Map 320×240 design → surface; scale×8 + half-bias avoids collapsed
+ * integer control points (jagged / “cut” fills on small surfaces). */
 static int32_t demo_scx(uint32_t sw, int32_t x) {
-    return (int32_t) (((int64_t) x * (int64_t) sw + 160) / 320);
+    return (int32_t) (((int64_t) x * (int64_t) sw * 8 + 1280) / 2560);
 }
 static int32_t demo_scy(uint32_t sh, int32_t y) {
-    return (int32_t) (((int64_t) y * (int64_t) sh + 120) / 240);
+    return (int32_t) (((int64_t) y * (int64_t) sh * 8 + 960) / 1920);
 }
 
 static void spawn_user_demo(void) {
@@ -145,6 +146,13 @@ void kmain(void) {
 
     if (font_init() != 0)
         kprintf("[boot] font_init failed (missing assets/*.ttf?)\n");
+
+    display_policy_init_defaults();
+    vfs_init();
+    if (initrd_init() == 0) {
+        tar_mount(initrd_bytes(), initrd_size());
+        display_policy_try_load_vfs("/etc/display.conf");
+    }
 
     display_init();
 
@@ -268,7 +276,7 @@ void kmain(void) {
             anim_bind_u8(a_al, &s3->alpha, FX_ONE, 0, 0, 255);
             anim_set_loop(a_al, 1);
 
-            /* Faz 12.9: UTF-8 + SDF cache + LCD subpixel (Noto Sans + Symbols2). */
+            /* UTF-8 + SDF text (Noto Sans + Symbols2; see scripts/fetch-google-fonts.sh). */
             if (s1) {
                 static const char k_font_demo[] =
                     "SimpleOS "
@@ -282,12 +290,7 @@ void kmain(void) {
     compositor_frame(COMPOSITOR_DEFAULT_BG);
     kprintf("[boot] compositor demo painted (3 surfaces)\n");
 
-    vfs_init();
-    if (initrd_init() == 0) {
-        tar_mount(initrd_bytes(), initrd_size());
-        vfs_dump(NULL, 0);
-        display_policy_try_load_vfs("/etc/display.conf");
-    }
+    vfs_dump(NULL, 0);
 
     /* LAPIC rate = integer multiple of configured refresh for stable pacing. */
     lapic_timer_init(display_policy_apic_timer_hz());

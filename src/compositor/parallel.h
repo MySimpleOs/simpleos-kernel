@@ -45,3 +45,6 @@ struct parallel_stats {
     uint32_t frame_cpus;       /* how many CPUs contributed last frame   */
 };
 void parallel_get_stats(struct parallel_stats *out);
+
+/* True while BSP is inside parallel_compose() (including AP barrier). */
+int parallel_compose_active(void);

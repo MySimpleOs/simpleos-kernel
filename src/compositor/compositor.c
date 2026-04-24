@@ -135,6 +135,24 @@ static void sort_indices(int *idx) {
     }
 }
 
+/* Geometry + appearance match last frame snapshot (pixel buffer may still
+ * differ — used to emit tight damage for partial surface_mark_dirty_rect). */
+static int surface_geom_matches_prev(const struct surface *s) {
+    if (!s || !s->prev_known) return 0;
+    if (s->x != s->prev_x || s->y != s->prev_y) return 0;
+    if (s->width != s->prev_w || s->height != s->prev_h) return 0;
+    if (s->z != s->prev_z) return 0;
+    if (s->alpha != s->prev_alpha || s->visible != s->prev_visible) return 0;
+    if (s->opaque != s->prev_opaque) return 0;
+    if (s->corner_radius != s->prev_corner_radius) return 0;
+    if (s->shadow_ox != s->prev_shadow_ox || s->shadow_oy != s->prev_shadow_oy)
+        return 0;
+    if (s->shadow_blur != s->prev_shadow_blur) return 0;
+    if (s->shadow_color != s->prev_shadow_color) return 0;
+    if (s->shadow_alpha != s->prev_shadow_alpha) return 0;
+    return 1;
+}
+
 static int surface_changed(const struct surface *s) {
     if (!s->prev_known)                        return 1;
     if (s->pixels_dirty)                       return 1;
@@ -223,8 +241,16 @@ void compositor_frame(uint32_t bg_xrgb) {
 
         if (!surface_changed(s)) continue;
 
-        if (prev_contrib) damage_add(&dmg, prev);
-        if (curr_contrib) damage_add(&dmg, curr);
+        if (s->pixels_dirty && s->dirty_rect_valid && surface_geom_matches_prev(s)) {
+            struct rect loc = rect_make(s->dirty_lx0, s->dirty_ly0,
+                                        s->dirty_lx1 - s->dirty_lx0,
+                                        s->dirty_ly1 - s->dirty_ly0);
+            struct rect scr = rect_make(s->x + loc.x, s->y + loc.y, loc.w, loc.h);
+            if (curr_contrib) damage_add(&dmg, scr);
+        } else {
+            if (prev_contrib) damage_add(&dmg, prev);
+            if (curr_contrib) damage_add(&dmg, curr);
+        }
     }
 
     damage_clip(&dmg, screen);
@@ -269,7 +295,11 @@ void compositor_frame(uint32_t bg_xrgb) {
      * (atomicity argument) but the Limine-FB hw_fb is write-combined
      * / uncached and full-frame memcpy cost 30 ms+, blowing the 8.3 ms
      * frame budget at 120 Hz. Rect publish brings it back to ~2 ms. */
-    display_present_rect(damage_bbox(&dmg));
+    /* Present each damage rect — not damage_bbox(). The bbox union can
+     * span almost the full screen (three panels + gaps) and forces a
+     * huge memcpy every frame; per-rect publish matches what compose wrote. */
+    for (int pri = 0; pri < dmg.count; pri++)
+        display_present_rect(dmg.rects[pri]);
 
     /* ---- phase 4: snapshot prev state + clear dirty bits ---- */
     for (int i = 0; i < slot_count; i++) {
@@ -291,6 +321,7 @@ void compositor_frame(uint32_t bg_xrgb) {
         s->prev_shadow_alpha   = s->shadow_alpha;
         s->prev_known          = 1;
         s->pixels_dirty        = 0;
+        s->dirty_rect_valid    = 0;
     }
 }
 
@@ -300,6 +331,15 @@ struct compositor_args {
 };
 
 static struct compositor_args thread_args;
+
+/* TSC delta → anim dt (seconds, Q16.16). Caps long stalls. */
+static fx16 tsc_elapsed_to_dt(uint64_t delta, uint64_t hz) {
+    if (!hz || !delta) return 0;
+    uint64_t cap = hz / 4u; /* ~250 ms at ~1 GHz TSC; scales with tsc_hz */
+    if (!cap) cap = delta;
+    if (delta > cap) delta = cap;
+    return (fx16) (((int64_t) delta * (int64_t) FX_ONE) / (int64_t) hz);
+}
 
 /* Kernel thread body: paces compositor_frame() against timer_ticks.
  *
@@ -311,32 +351,51 @@ static struct compositor_args thread_args;
  * snapped forward and a drop is counted so averages stay honest. */
 static void compositor_thread_body(void *arg) {
     (void) arg;
-    if (!timer_hz) return;
+    /* Pacing uses TSC when available so frame rate does not depend on a
+     * miscalibrated LAPIC tick (observed ~1 FPS when timer_hz was wrong). */
+    if (!tsc_hz && !timer_hz) return;
 
-    uint64_t fpt = timer_hz / thread_args.target_hz;
+    uint64_t fpt = timer_hz ? (uint64_t) timer_hz / thread_args.target_hz : 0;
     if (!fpt) fpt = 1;
+
+    uint64_t tsc_per_frame = 0;
+    if (tsc_hz) {
+        tsc_per_frame = tsc_hz / (uint64_t) thread_args.target_hz;
+        if (tsc_per_frame < 1000ull) tsc_per_frame = 1000ull;
+    }
 
     uint64_t tsc_per_us = tsc_hz / 1000000ull;
     if (!tsc_per_us) tsc_per_us = 1;
 
-    /* Fixed dt of exactly 1/target_hz. Measured dt (tsc-based) drifts
-     * frame-to-frame — that's wall-clock-accurate but produces visibly
-     * non-uniform motion (a 12 ms frame advances the animation farther
-     * than an 8 ms frame, then the next lands in a different
-     * sub-pixel, reading as judder/flicker on any surface that moves).
-     * Fixed dt gives the animation engine a uniform input; if the
-     * scheduler stalls for real (rare), motion pauses briefly rather
-     * than teleporting. At 120 Hz the stutter is invisible; the
-     * cure-better-than-the-disease calculus. */
-    fx16 target_dt = fx_div(FX_ONE, FX_FROM_INT(thread_args.target_hz));
-    fx16 dt_fx     = target_dt;
+    /* Nominal dt when wall clock is unknown (first frame). */
+    fx16 nominal_dt = fx_div(FX_ONE, FX_FROM_INT(thread_args.target_hz));
 
-    uint64_t next    = timer_ticks + fpt;
+    uint64_t next_tick = (uint64_t) timer_ticks + fpt;
+    uint64_t next_tsc  = tsc_per_frame ? (rdtsc() + tsc_per_frame) : 0;
     uint32_t window_count = 0;
     uint64_t window_sum   = 0;
+    uint64_t win_wall_tsc0 = rdtsc();
+
+    uint64_t last_frame_start = rdtsc();
+    int      anim_dt_first    = 1;
 
     for (;;) {
-        while ((uint64_t) timer_ticks < next) thread_yield();
+        if (tsc_per_frame) {
+            while (rdtsc() < next_tsc) thread_yield();
+        } else {
+            while ((uint64_t) timer_ticks < next_tick) thread_yield();
+        }
+
+        uint64_t now_frame = rdtsc();
+        fx16 dt_fx = nominal_dt;
+        if (tsc_hz) {
+            if (!anim_dt_first) {
+                dt_fx = tsc_elapsed_to_dt(now_frame - last_frame_start, tsc_hz);
+                if (dt_fx < FX_FROM_MILLI(1)) dt_fx = FX_FROM_MILLI(1);
+            }
+            anim_dt_first = 0;
+        }
+        last_frame_start = now_frame;
 
         anim_tick_all(dt_fx);
         cursor_tick();
@@ -356,13 +415,20 @@ static void compositor_thread_body(void *arg) {
          * reported avg fresh without a full ring buffer. */
         if (window_count >= 120) {
             cs_avg_us    = (uint32_t) (window_sum / window_count);
+            uint64_t win_wall_tsc1 = rdtsc();
+            uint32_t wall_hz = 0;
+            if (tsc_hz && win_wall_tsc1 > win_wall_tsc0) {
+                wall_hz = (uint32_t) ((120ull * tsc_hz) / (win_wall_tsc1 - win_wall_tsc0));
+            }
+            win_wall_tsc0 = win_wall_tsc1;
             window_sum   = 0;
             window_count = 0;
             struct parallel_stats ps;
             parallel_get_stats(&ps);
-            kprintf("[compositor] fps=%u last=%uus avg=%uus max=%uus drops=%u "
+            kprintf("[compositor] target_hz=%u wall_hz=%u last=%uus avg=%uus max=%uus drops=%u "
                     "dmg=%u/%upx skip=%u cpus=%u bsp-tiles=%u ap-tiles=%u\n",
                     (unsigned) thread_args.target_hz,
+                    (unsigned) wall_hz,
                     (unsigned) cs_last_us,
                     (unsigned) cs_avg_us,
                     (unsigned) cs_max_us,
@@ -377,12 +443,21 @@ static void compositor_thread_body(void *arg) {
             cs_skipped = 0;
         }
 
-        uint64_t now = timer_ticks;
-        if (now > next + fpt) {       /* >1 full frame behind            */
-            cs_drops++;
-            next = now + fpt;
+        if (tsc_per_frame) {
+            next_tsc += tsc_per_frame;
+            uint64_t nowt = rdtsc();
+            if (nowt > next_tsc + tsc_per_frame) {
+                cs_drops++;
+                next_tsc = nowt + tsc_per_frame;
+            }
         } else {
-            next += fpt;
+            uint64_t now = (uint64_t) timer_ticks;
+            if (now > next_tick + fpt) {
+                cs_drops++;
+                next_tick = now + fpt;
+            } else {
+                next_tick += fpt;
+            }
         }
     }
 }

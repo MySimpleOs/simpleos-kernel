@@ -1,6 +1,7 @@
 #include "parallel.h"
 #include "surface.h"
 
+#include "../arch/x86_64/hypervisor.h"
 #include "../arch/x86_64/smp.h"
 
 #include <stdint.h>
@@ -28,6 +29,10 @@ static struct compose_ctx ctx;
 static volatile uint32_t bsp_tiles_total;
 static volatile uint32_t ap_tiles_total;
 static volatile uint32_t last_frame_cpus;
+
+/* BSP is inside the AP barrier; timer IRQ must not preempt into
+ * thread_yield() here or barrier progress stalls (~1 FPS). */
+static volatile int parallel_barrier_active;
 
 /* Compose one band: for each damage rect, intersect with band, clear
  * bg, then blit every surface that overlaps the intersection (z-sorted
@@ -127,6 +132,10 @@ void compositor_ap_worker(uint32_t cpu_id) {
     }
 }
 
+int parallel_compose_active(void) {
+    return __atomic_load_n(&parallel_barrier_active, __ATOMIC_ACQUIRE);
+}
+
 void parallel_compose(struct blit_dst dst,
                       const struct damage *dmg,
                       struct surface **z_sorted,
@@ -134,23 +143,26 @@ void parallel_compose(struct blit_dst dst,
                       uint32_t bg) {
     if (!dmg || dmg->count == 0) return;
 
-    /* Work out bands. `smp_online_count` is BSP + APs; the BSP does one
-     * band itself and any extras (work stealing), APs take the rest. */
     uint64_t cpus = smp_online_count();
     if (cpus < 1) cpus = 1;
-    uint32_t N = (uint32_t) cpus;
-    if (N > PARALLEL_MAX_BANDS) N = PARALLEL_MAX_BANDS;
+    /* VirtualBox: multi-AP compose + framebuffer WC/MMIO is much slower and
+     * historically hit barrier/timer edge cases (~few FPS). QEMU/KVM OK. */
+    if (hypervisor_is_virtualbox())
+        cpus = 1;
 
     struct rect bbox = damage_bbox(dmg);
+    if (bbox.w <= 0 || bbox.h <= 0) return;
+
+    uint32_t N = (uint32_t) cpus;
+    if (N > PARALLEL_MAX_BANDS) N = PARALLEL_MAX_BANDS;
 
     /* Don't split so fine that per-band overhead eats the parallel
      * speedup. 32 rows per band is a reasonable cut-off for naive C
      * blit at ~GB/s memory-bw ceilings. */
     const int32_t min_rows = 32;
-    if (bbox.h < (int32_t)(N * (uint32_t) min_rows)) {
-        N = (uint32_t) (bbox.h / min_rows);
-        if (N < 1) N = 1;
-    }
+    uint32_t cap_by_h = (uint32_t) (bbox.h / min_rows);
+    if (cap_by_h < 1u) cap_by_h = 1u;
+    if (N > cap_by_h) N = cap_by_h;
 
     for (uint32_t i = 0; i < N; i++) {
         int32_t y0 = bbox.y + (int32_t)(((int64_t) bbox.h * i) / N);
@@ -167,9 +179,13 @@ void parallel_compose(struct blit_dst dst,
     __atomic_store_n(&ctx.next_tile,  1, __ATOMIC_RELAXED);  /* BSP takes 0 */
     __atomic_store_n(&ctx.done_count, 0, __ATOMIC_RELAXED);
 
-    /* Publishing epoch makes every context field visible to APs. Any
-     * AP that sees the bumped epoch has also seen dst/dmg/z_sorted. */
-    __atomic_add_fetch(&ctx.epoch, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&parallel_barrier_active, 1, __ATOMIC_RELEASE);
+
+    /* Release fence: all plain stores to ctx must be visible before any
+     * AP observes the new epoch (pairs with acquire load in AP loop). */
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    /* Publishing epoch makes every context field visible to APs. */
+    __atomic_add_fetch(&ctx.epoch, 1, __ATOMIC_ACQ_REL);
 
     /* BSP does tile 0 first, then steals. */
     uint32_t bsp_tiles = 0;
@@ -183,11 +199,13 @@ void parallel_compose(struct blit_dst dst,
     }
     __atomic_add_fetch(&bsp_tiles_total, bsp_tiles, __ATOMIC_RELAXED);
 
-    /* Wait for every AP to post done. n_aps is CPUs minus us. */
+    /* Wait for every AP to post done. n_aps is CPUs minus BSP. */
     uint64_t n_aps = cpus > 0 ? cpus - 1 : 0;
     while (__atomic_load_n(&ctx.done_count, __ATOMIC_ACQUIRE) < n_aps) {
         __asm__ volatile ("pause");
     }
+
+    __atomic_store_n(&parallel_barrier_active, 0, __ATOMIC_RELEASE);
 
     /* How many CPUs actually did any work? At least BSP. APs counted
      * iff they managed to claim a tile. Rough: non-zero work_done_count

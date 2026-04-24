@@ -421,7 +421,7 @@ int path_stroke_surface(struct surface *s, path_t *p, int32_t width_px,
             int32_t x1 = fc.vx[i + 1], y1 = fc.vy[i + 1];
             int32_t dx = x1 - x0, dy = y1 - y0;
             int64_t L2 = (int64_t) dx * dx + (int64_t) dy * dy;
-            if (L2 < 4) continue;
+            if (L2 == 0) continue;
             int32_t ilen = isqrt64(L2);
             if (ilen < 1) ilen = 1;
             int32_t px = (int32_t) (((int64_t) (-dy) * half) / ilen);

@@ -52,6 +52,12 @@ struct surface {
     uint8_t   visible;          /* 0 hides without destroying                */
     uint8_t   opaque;           /* 1 = ignore per-pixel alpha at blit        */
     uint8_t   pixels_dirty;     /* set by surface_mark_dirty / surface_clear */
+    uint8_t   dirty_rect_valid; /* 1 → use dirty_* as local pixel bbox only   */
+    uint8_t   _pad_dirty[3];
+
+    /* Local-space (0..width/height) dirty region for partial repaints.
+     * Half-open: [lx0, lx1) × [ly0, ly1). Meaningful only if dirty_rect_valid. */
+    int32_t   dirty_lx0, dirty_ly0, dirty_lx1, dirty_ly1;
 
     /* Rounded corners. 0 = sharp. Capped at SURFACE_MAX_CORNER. */
     uint32_t  corner_radius;
@@ -130,6 +136,12 @@ struct rect surface_effective_rect(const struct surface *s);
  * Must be called whenever callers write into the buffer directly (the
  * compositor cannot otherwise tell). Cleared automatically each frame. */
 void surface_mark_dirty(struct surface *s);
+
+/* Mark a sub-rectangle in surface-local coordinates (tight damage for text,
+ * small overlays). Unions with any previous partial dirty until the frame
+ * ends. Use surface_mark_dirty() for full-surface edits (clears partial). */
+void surface_mark_dirty_rect(struct surface *s,
+                             int32_t lx0, int32_t ly0, int32_t lx1, int32_t ly1);
 
 /* Lazily (re)generate the cached shadow_mask. No-op if shadow_blur == 0
  * or the mask is already current. Called by compositor_frame before

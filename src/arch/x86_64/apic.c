@@ -89,7 +89,27 @@ void lapic_timer_init(uint32_t hz) {
     uint32_t remaining = lapic_read(LAPIC_TIMER_CURCNT);
     uint32_t consumed  = 0xFFFFFFFF - remaining;
 
-    uint32_t count = (uint32_t) ((uint64_t) consumed * 100 / hz);
+    /* Reload value for periodic mode: (ticks counted in 10 ms) * 100 / hz.
+     * Broken calibration (some VMs / PIT quirks) yields tiny `consumed` or
+     * a `count` so large the LAPIC fires ~1 Hz — the compositor then paces
+     * at ~1 FPS when it waits on timer_ticks. Clamp implied IRQ rate. */
+    if (hz < 100u) hz = 100u;
+    if (consumed < 500u) {
+        kprintf("[lapic] warn: consumed=%u low; assume 200000 ticks/10ms\n",
+                (unsigned) consumed);
+        consumed = 200000u;
+    }
+
+    uint64_t wide = (uint64_t) consumed * 100ull / (uint64_t) hz;
+    /* Implied Hz = consumed*100/count; keep implied in [40, 10000]. */
+    uint64_t c_fast = (uint64_t) consumed * 100ull / 10000ull; /* count floor -> max 10 kHz */
+    uint64_t c_slow = (uint64_t) consumed * 100ull / 40ull;    /* count ceil  -> min ~40 Hz */
+    if (c_fast < 32ull) c_fast = 32ull;
+    if (c_slow < c_fast + 1ull) c_slow = c_fast + 1000ull;
+    if (wide < c_fast) wide = c_fast;
+    if (wide > c_slow) wide = c_slow;
+
+    uint32_t count = (uint32_t) wide;
 
     /* LVT timer: vector | periodic (bit 17). */
     lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | (1u << 17));
