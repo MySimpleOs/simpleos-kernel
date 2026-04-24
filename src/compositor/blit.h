@@ -6,8 +6,14 @@
  * Rectangle semantics: rx/ry are top-left in destination, rw/rh are
  * size. Negative positions and out-of-bounds are clipped here; callers can
  * pass global coords freely.
+ *
+ * The `*_scissor` variants take an additional rect that further clips the
+ * destination — used by the damage tracker so each primitive paints only
+ * inside the damage region for this frame. Pass NULL scissor to disable
+ * (equivalent to the non-scissor variant).
  */
 
+#include "rect.h"
 #include <stdint.h>
 
 struct blit_dst {
@@ -29,14 +35,25 @@ void blit_fill(const struct blit_dst *dst,
                int32_t rx, int32_t ry, int32_t rw, int32_t rh,
                uint32_t color);
 
+void blit_fill_scissor(const struct blit_dst *dst, const struct rect *scissor,
+                       int32_t rx, int32_t ry, int32_t rw, int32_t rh,
+                       uint32_t color);
+
 /* Opaque copy (ignores source alpha). Destination-position (dx, dy) in
  * dst coords; source reads from src top-left. Out-of-bounds are clipped
  * on both ends. */
 void blit_copy(const struct blit_dst *dst, int32_t dx, int32_t dy,
                const struct blit_src *src);
 
+void blit_copy_scissor(const struct blit_dst *dst, const struct rect *scissor,
+                       int32_t dx, int32_t dy, const struct blit_src *src);
+
 /* Straight-alpha 'over' composite. src.a blended with dst underneath,
  * then scaled by per-surface global_alpha (0..255). When global_alpha=255
  * and src.a=255 for every pixel the result equals blit_copy. */
 void blit_alpha(const struct blit_dst *dst, int32_t dx, int32_t dy,
                 const struct blit_src *src, uint8_t global_alpha);
+
+void blit_alpha_scissor(const struct blit_dst *dst, const struct rect *scissor,
+                        int32_t dx, int32_t dy,
+                        const struct blit_src *src, uint8_t global_alpha);

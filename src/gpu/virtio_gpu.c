@@ -224,25 +224,41 @@ static int set_scanout_for(uint32_t id) {
     return expect_ok(rsp->type, VIRTIO_GPU_RESP_OK_NODATA, "SET_SCANOUT");
 }
 
-static void transfer_for(uint32_t id) {
+/* offset into the resource for the first pixel of the rect. VirtIO-GPU's
+ * TRANSFER_TO_HOST_2D needs this so the host can locate (x, y) within the
+ * linear guest backing. Stride is disp_w, 4 bytes per pixel. */
+static uint64_t rect_offset(uint32_t x, uint32_t y) {
+    return ((uint64_t) y * disp_w + x) * 4ull;
+}
+
+static void transfer_for_rect(uint32_t id,
+                              uint32_t x, uint32_t y,
+                              uint32_t w, uint32_t h) {
     struct virtio_gpu_transfer_to_host_2d *xfer =
         (struct virtio_gpu_transfer_to_host_2d *) cmd_buf;
     for (size_t i = 0; i < sizeof(*xfer); i++) cmd_buf[i] = 0;
     xfer->hdr.type    = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
-    xfer->r.width     = disp_w;
-    xfer->r.height    = disp_h;
+    xfer->r.x         = x;
+    xfer->r.y         = y;
+    xfer->r.width     = w;
+    xfer->r.height    = h;
+    xfer->offset      = rect_offset(x, y);
     xfer->resource_id = id;
 
     submit_two_desc(sizeof(*xfer), sizeof(struct virtio_gpu_ctrl_hdr));
 }
 
-static void flush_for(uint32_t id) {
+static void flush_for_rect(uint32_t id,
+                           uint32_t x, uint32_t y,
+                           uint32_t w, uint32_t h) {
     struct virtio_gpu_resource_flush *flush =
         (struct virtio_gpu_resource_flush *) cmd_buf;
     for (size_t i = 0; i < sizeof(*flush); i++) cmd_buf[i] = 0;
     flush->hdr.type    = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
-    flush->r.width     = disp_w;
-    flush->r.height    = disp_h;
+    flush->r.x         = x;
+    flush->r.y         = y;
+    flush->r.width     = w;
+    flush->r.height    = h;
     flush->resource_id = id;
 
     submit_two_desc(sizeof(*flush), sizeof(struct virtio_gpu_ctrl_hdr));
@@ -250,7 +266,6 @@ static void flush_for(uint32_t id) {
 
 void virtio_gpu_present(void) {
     if (!ready) return;
-
     /* Single-resource pipeline: scanout is bound to resource 0 once at
      * init. Each present pushes the guest backing to the host-side copy
      * of that same resource and flushes to refresh the display.
@@ -258,8 +273,28 @@ void virtio_gpu_present(void) {
      * display flicker (visible on a 60 Hz monitor even with 60 Hz
      * guest pacing). The second resource/backing stays allocated and
      * unused — cheap insurance for a future triple-buffer path. */
-    transfer_for(resource_ids[0]);
-    flush_for(resource_ids[0]);
+    transfer_for_rect(resource_ids[0], 0, 0, disp_w, disp_h);
+    flush_for_rect   (resource_ids[0], 0, 0, disp_w, disp_h);
+}
+
+void virtio_gpu_present_rect(int32_t x, int32_t y,
+                             uint32_t w, uint32_t h) {
+    if (!ready) return;
+    /* Clip to scanout bounds. Negative coords shift the origin toward
+     * zero and reduce w/h accordingly. */
+    int32_t x0 = x, y0 = y;
+    int32_t x1 = x + (int32_t) w, y1 = y + (int32_t) h;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int32_t) disp_w) x1 = (int32_t) disp_w;
+    if (y1 > (int32_t) disp_h) y1 = (int32_t) disp_h;
+    if (x1 <= x0 || y1 <= y0) return;
+    uint32_t cx = (uint32_t) x0;
+    uint32_t cy = (uint32_t) y0;
+    uint32_t cw = (uint32_t) (x1 - x0);
+    uint32_t ch = (uint32_t) (y1 - y0);
+    transfer_for_rect(resource_ids[0], cx, cy, cw, ch);
+    flush_for_rect   (resource_ids[0], cx, cy, cw, ch);
 }
 
 int virtio_gpu_init(struct pci_device *pci) {

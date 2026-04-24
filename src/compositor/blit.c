@@ -3,27 +3,48 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Generic rect clipper — returns 1 if a non-empty intersection remains,
- * with output coordinates updated in place. Used by every primitive so
- * callers never have to care about clipping. */
-static int clip_rect(const struct blit_dst *dst,
+/* Effective destination clip = dst bounds ∩ scissor (if given). Returns
+ * the clip as (cx0, cy0, cx1, cy1). The primitives then intersect their
+ * own rect against it before walking pixels. */
+static int effective_clip(const struct blit_dst *dst, const struct rect *scissor,
+                          int32_t *cx0, int32_t *cy0,
+                          int32_t *cx1, int32_t *cy1) {
+    int32_t x0 = 0, y0 = 0;
+    int32_t x1 = (int32_t) dst->width;
+    int32_t y1 = (int32_t) dst->height;
+    if (scissor) {
+        if (scissor->x > x0) x0 = scissor->x;
+        if (scissor->y > y0) y0 = scissor->y;
+        if (scissor->x + scissor->w < x1) x1 = scissor->x + scissor->w;
+        if (scissor->y + scissor->h < y1) y1 = scissor->y + scissor->h;
+    }
+    if (x1 <= x0 || y1 <= y0) return 0;
+    *cx0 = x0; *cy0 = y0; *cx1 = x1; *cy1 = y1;
+    return 1;
+}
+
+/* Clip (rx, ry, rw, rh) against the effective clip and adjust src offsets
+ * so source sampling stays in sync. Returns 1 if any pixels survive. */
+static int clip_rect(const struct blit_dst *dst, const struct rect *scissor,
                      int32_t *rx, int32_t *ry,
                      int32_t *rw, int32_t *rh,
                      int32_t *sx, int32_t *sy) {
+    int32_t cx0, cy0, cx1, cy1;
+    if (!effective_clip(dst, scissor, &cx0, &cy0, &cx1, &cy1)) return 0;
+
     int32_t x0 = *rx, y0 = *ry, w = *rw, h = *rh;
     int32_t sox = sx ? *sx : 0;
     int32_t soy = sy ? *sy : 0;
 
     if (w <= 0 || h <= 0) return 0;
 
-    if (x0 < 0) { sox += -x0; w += x0; x0 = 0; }
-    if (y0 < 0) { soy += -y0; h += y0; y0 = 0; }
+    if (x0 < cx0) { sox += cx0 - x0; w -= cx0 - x0; x0 = cx0; }
+    if (y0 < cy0) { soy += cy0 - y0; h -= cy0 - y0; y0 = cy0; }
 
-    if ((uint32_t) x0 >= dst->width)  return 0;
-    if ((uint32_t) y0 >= dst->height) return 0;
+    if (x0 >= cx1 || y0 >= cy1) return 0;
 
-    if ((uint32_t)(x0 + w) > dst->width)  w = (int32_t) dst->width  - x0;
-    if ((uint32_t)(y0 + h) > dst->height) h = (int32_t) dst->height - y0;
+    if (x0 + w > cx1) w = cx1 - x0;
+    if (y0 + h > cy1) h = cy1 - y0;
 
     if (w <= 0 || h <= 0) return 0;
 
@@ -36,8 +57,14 @@ static int clip_rect(const struct blit_dst *dst,
 void blit_fill(const struct blit_dst *dst,
                int32_t rx, int32_t ry, int32_t rw, int32_t rh,
                uint32_t color) {
+    blit_fill_scissor(dst, NULL, rx, ry, rw, rh, color);
+}
+
+void blit_fill_scissor(const struct blit_dst *dst, const struct rect *scissor,
+                       int32_t rx, int32_t ry, int32_t rw, int32_t rh,
+                       uint32_t color) {
     if (!dst || !dst->pixels) return;
-    if (!clip_rect(dst, &rx, &ry, &rw, &rh, NULL, NULL)) return;
+    if (!clip_rect(dst, scissor, &rx, &ry, &rw, &rh, NULL, NULL)) return;
 
     uint32_t stride = dst->stride;
     uint32_t *row = dst->pixels + (uint32_t) ry * stride + (uint32_t) rx;
@@ -47,22 +74,28 @@ void blit_fill(const struct blit_dst *dst,
     }
 }
 
-static int clip_src(const struct blit_dst *dst, const struct blit_src *src,
+static int clip_src(const struct blit_dst *dst, const struct rect *scissor,
+                    const struct blit_src *src,
                     int32_t *dx, int32_t *dy,
                     int32_t *rw, int32_t *rh,
                     int32_t *sx, int32_t *sy) {
     *rw = (int32_t) src->width;
     *rh = (int32_t) src->height;
     *sx = 0; *sy = 0;
-    return clip_rect(dst, dx, dy, rw, rh, sx, sy);
+    return clip_rect(dst, scissor, dx, dy, rw, rh, sx, sy);
 }
 
 void blit_copy(const struct blit_dst *dst, int32_t dx, int32_t dy,
                const struct blit_src *src) {
+    blit_copy_scissor(dst, NULL, dx, dy, src);
+}
+
+void blit_copy_scissor(const struct blit_dst *dst, const struct rect *scissor,
+                       int32_t dx, int32_t dy, const struct blit_src *src) {
     if (!dst || !dst->pixels || !src || !src->pixels) return;
 
     int32_t rw, rh, sx, sy;
-    if (!clip_src(dst, src, &dx, &dy, &rw, &rh, &sx, &sy)) return;
+    if (!clip_src(dst, scissor, src, &dx, &dy, &rw, &rh, &sx, &sy)) return;
 
     uint32_t dstride = dst->stride;
     uint32_t sstride = src->stride;
@@ -84,11 +117,17 @@ static inline uint32_t mul8(uint32_t a, uint32_t b) {
 
 void blit_alpha(const struct blit_dst *dst, int32_t dx, int32_t dy,
                 const struct blit_src *src, uint8_t global_alpha) {
+    blit_alpha_scissor(dst, NULL, dx, dy, src, global_alpha);
+}
+
+void blit_alpha_scissor(const struct blit_dst *dst, const struct rect *scissor,
+                        int32_t dx, int32_t dy,
+                        const struct blit_src *src, uint8_t global_alpha) {
     if (!dst || !dst->pixels || !src || !src->pixels) return;
     if (global_alpha == 0) return;
 
     int32_t rw, rh, sx, sy;
-    if (!clip_src(dst, src, &dx, &dy, &rw, &rh, &sx, &sy)) return;
+    if (!clip_src(dst, scissor, src, &dx, &dy, &rw, &rh, &sx, &sy)) return;
 
     uint32_t dstride = dst->stride;
     uint32_t sstride = src->stride;

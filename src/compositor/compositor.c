@@ -3,6 +3,7 @@
 #include "blit.h"
 #include "anim.h"
 #include "cursor.h"
+#include "damage.h"
 
 #include "../arch/x86_64/apic.h"
 #include "../gpu/display.h"
@@ -15,14 +16,24 @@
 static struct surface *slots[COMPOSITOR_MAX_SURFACES];
 static int             slot_count;
 
+/* Damage that survives until the next frame eats it. Populated by
+ * compositor_remove() (a removed surface must repaint its last rect to
+ * expose the bg) and compositor_mark_full_damage(). compositor_frame
+ * merges this in at the start, then resets. */
+static struct damage carry_damage;
+static int           full_damage_requested = 1;  /* first frame: paint all */
+
 /* Frame-time stats. Writers: compositor thread only. Readers via
  * compositor_get_stats() take a consistent snapshot with cli/sti. */
 static volatile uint64_t cs_frame_count;
 static volatile uint32_t cs_last_us, cs_avg_us, cs_max_us, cs_drops;
+static volatile uint32_t cs_damage_rects, cs_damage_px, cs_skipped;
 
 void compositor_init(void) {
     for (int i = 0; i < COMPOSITOR_MAX_SURFACES; i++) slots[i] = NULL;
     slot_count = 0;
+    damage_reset(&carry_damage);
+    full_damage_requested = 1;
     kprintf("[compositor] init, %d surface slots\n", COMPOSITOR_MAX_SURFACES);
 }
 
@@ -33,17 +44,33 @@ int compositor_add(struct surface *s) {
     }
     if (slot_count >= COMPOSITOR_MAX_SURFACES) return -1;
     slots[slot_count++] = s;
+    /* New surface hasn't been seen before; its first frame will damage
+     * the full rect via prev_known=0. Nothing else needed. */
     return 0;
 }
 
 void compositor_remove(struct surface *s) {
+    if (!s) return;
     for (int i = 0; i < slot_count; i++) {
         if (slots[i] == s) {
+            /* Leave a rect-sized hole where the surface was so the next
+             * frame repaints the background (and any surfaces it used to
+             * cover). */
+            if (s->prev_known) {
+                struct rect r = rect_make(s->prev_x, s->prev_y,
+                                          (int32_t) s->prev_w,
+                                          (int32_t) s->prev_h);
+                damage_add(&carry_damage, r);
+            }
             for (int j = i; j < slot_count - 1; j++) slots[j] = slots[j + 1];
             slots[--slot_count] = NULL;
             return;
         }
     }
+}
+
+void compositor_mark_full_damage(void) {
+    full_damage_requested = 1;
 }
 
 static int top_z(void) {
@@ -90,6 +117,24 @@ static void sort_indices(int *idx) {
     }
 }
 
+static int surface_changed(const struct surface *s) {
+    if (!s->prev_known)                return 1;
+    if (s->pixels_dirty)               return 1;
+    if (s->x      != s->prev_x)        return 1;
+    if (s->y      != s->prev_y)        return 1;
+    if (s->width  != s->prev_w)        return 1;
+    if (s->height != s->prev_h)        return 1;
+    if (s->z      != s->prev_z)        return 1;
+    if (s->alpha  != s->prev_alpha)    return 1;
+    if (s->visible!= s->prev_visible)  return 1;
+    if (s->opaque != s->prev_opaque)   return 1;
+    return 0;
+}
+
+static inline int surface_contributed(uint8_t visible, uint8_t alpha) {
+    return visible && alpha > 0;
+}
+
 void compositor_frame(uint32_t bg_xrgb) {
     const struct display *dd = display_get();
     if (!dd || !dd->pixels) return;
@@ -100,27 +145,109 @@ void compositor_frame(uint32_t bg_xrgb) {
         .height = dd->height,
         .stride = dd->pitch / 4u,
     };
+    struct rect screen = rect_make(0, 0,
+                                   (int32_t) dd->width, (int32_t) dd->height);
 
-    blit_fill(&dst, 0, 0, (int32_t) dd->width, (int32_t) dd->height, bg_xrgb);
+    /* ---- phase 1: damage accumulation ---- */
+    struct damage dmg;
+    damage_reset(&dmg);
 
+    if (full_damage_requested) {
+        damage_add(&dmg, screen);
+        full_damage_requested = 0;
+    }
+
+    /* Merge any damage queued from previous remove()/explicit marks. */
+    for (int i = 0; i < carry_damage.count; i++) damage_add(&dmg, carry_damage.rects[i]);
+    damage_reset(&carry_damage);
+
+    for (int i = 0; i < slot_count; i++) {
+        struct surface *s = slots[i];
+        if (!s) continue;
+
+        struct rect curr = rect_make(s->x, s->y,
+                                     (int32_t) s->width,
+                                     (int32_t) s->height);
+        struct rect prev = rect_make(s->prev_x, s->prev_y,
+                                     (int32_t) s->prev_w,
+                                     (int32_t) s->prev_h);
+
+        int prev_contrib = s->prev_known &&
+                           surface_contributed(s->prev_visible, s->prev_alpha);
+        int curr_contrib = surface_contributed(s->visible, s->alpha);
+
+        if (!surface_changed(s)) continue;
+
+        if (prev_contrib) damage_add(&dmg, prev);
+        if (curr_contrib) damage_add(&dmg, curr);
+    }
+
+    damage_clip(&dmg, screen);
+    cs_damage_rects = (uint32_t) dmg.count;
+    cs_damage_px    = (uint32_t) damage_area_sum(&dmg);
+
+    if (dmg.count == 0) {
+        /* Nothing to draw and nothing to present. */
+        cs_skipped++;
+        return;
+    }
+
+    /* ---- phase 2: scissor-clipped clear + blit per damage rect ---- */
     int idx[COMPOSITOR_MAX_SURFACES];
     sort_indices(idx);
 
-    for (int i = 0; i < slot_count; i++) {
-        struct surface *s = slots[idx[i]];
-        if (!s || !s->pixels || !s->visible || s->alpha == 0) continue;
+    for (int ri = 0; ri < dmg.count; ri++) {
+        struct rect r = dmg.rects[ri];
+        blit_fill_scissor(&dst, &r, r.x, r.y, r.w, r.h, bg_xrgb);
 
-        struct blit_src src = {
-            .pixels = s->pixels,
-            .width  = s->width,
-            .height = s->height,
-            .stride = s->width,
-        };
-        if (s->opaque) blit_copy(&dst, s->x, s->y, &src);
-        else           blit_alpha(&dst, s->x, s->y, &src, s->alpha);
+        for (int i = 0; i < slot_count; i++) {
+            struct surface *s = slots[idx[i]];
+            if (!s || !s->pixels)                     continue;
+            if (!s->visible || s->alpha == 0)         continue;
+
+            struct rect srect = rect_make(s->x, s->y,
+                                          (int32_t) s->width,
+                                          (int32_t) s->height);
+            if (!rect_overlaps(&srect, &r)) continue;
+
+            struct blit_src src = {
+                .pixels = s->pixels,
+                .width  = s->width,
+                .height = s->height,
+                .stride = s->width,
+            };
+            if (s->opaque) blit_copy_scissor (&dst, &r, s->x, s->y, &src);
+            else           blit_alpha_scissor(&dst, &r, s->x, s->y, &src, s->alpha);
+        }
     }
 
-    display_present();
+    /* ---- phase 3: present each damage rect separately ---- */
+    /* Per-rect present beats a bbox when rects are disjoint: the bbox
+     * of (top-left animating window + bottom-right cursor) covers most
+     * of the screen, while the two actual rects together touch only a
+     * tiny fraction. VirtIO submit overhead (~1 µs per command) is
+     * cheap relative to the pixel transfer it saves. The damage list is
+     * bounded at DAMAGE_MAX_RECTS (collapses to a bbox on overflow),
+     * so submit count stays tight. */
+    for (int ri = 0; ri < dmg.count; ri++) {
+        display_present_rect(dmg.rects[ri]);
+    }
+
+    /* ---- phase 4: snapshot prev state + clear dirty bits ---- */
+    for (int i = 0; i < slot_count; i++) {
+        struct surface *s = slots[i];
+        if (!s) continue;
+        s->prev_x       = s->x;
+        s->prev_y       = s->y;
+        s->prev_w       = s->width;
+        s->prev_h       = s->height;
+        s->prev_z       = s->z;
+        s->prev_alpha   = s->alpha;
+        s->prev_visible = s->visible;
+        s->prev_opaque  = s->opaque;
+        s->prev_known   = 1;
+        s->pixels_dirty = 0;
+    }
 }
 
 struct compositor_args {
@@ -195,13 +322,18 @@ static void compositor_thread_body(void *arg) {
             cs_avg_us    = (uint32_t) (window_sum / window_count);
             window_sum   = 0;
             window_count = 0;
-            kprintf("[compositor] fps=%u last=%uus avg=%uus max=%uus drops=%u\n",
+            kprintf("[compositor] fps=%u last=%uus avg=%uus max=%uus drops=%u "
+                    "dmg=%u/%upx skip=%u\n",
                     (unsigned) thread_args.target_hz,
                     (unsigned) cs_last_us,
                     (unsigned) cs_avg_us,
                     (unsigned) cs_max_us,
-                    (unsigned) cs_drops);
+                    (unsigned) cs_drops,
+                    (unsigned) cs_damage_rects,
+                    (unsigned) cs_damage_px,
+                    (unsigned) cs_skipped);
             cs_max_us = 0;
+            cs_skipped = 0;
         }
 
         uint64_t now = timer_ticks;
@@ -225,9 +357,12 @@ void compositor_start(uint32_t bg_xrgb, uint32_t target_hz) {
 void compositor_get_stats(struct compositor_stats *out) {
     if (!out) return;
     /* No cross-core writer yet (Faz 12.6); a plain copy is fine for now. */
-    out->frame_count = cs_frame_count;
-    out->last_us     = cs_last_us;
-    out->avg_us      = cs_avg_us;
-    out->max_us      = cs_max_us;
-    out->drops       = cs_drops;
+    out->frame_count  = cs_frame_count;
+    out->last_us      = cs_last_us;
+    out->avg_us       = cs_avg_us;
+    out->max_us       = cs_max_us;
+    out->drops        = cs_drops;
+    out->damage_rects = cs_damage_rects;
+    out->damage_px    = cs_damage_px;
+    out->skipped      = cs_skipped;
 }

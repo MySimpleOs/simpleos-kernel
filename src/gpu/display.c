@@ -24,6 +24,12 @@ static void virtio_present(void) {
     dsp.pixels = virtio_gpu_backbuffer();
 }
 
+static void virtio_present_rect(struct rect r) {
+    if (r.w <= 0 || r.h <= 0) return;
+    virtio_gpu_present_rect(r.x, r.y, (uint32_t) r.w, (uint32_t) r.h);
+    dsp.pixels = virtio_gpu_backbuffer();
+}
+
 void display_init(void) {
     if (virtio_gpu_ready()) {
         dsp.pixels          = virtio_gpu_backbuffer();
@@ -32,6 +38,7 @@ void display_init(void) {
         dsp.pitch           = virtio_gpu_pitch();
         dsp.double_buffered = 0;
         dsp.present         = virtio_present;
+        dsp.present_rect    = virtio_present_rect;
         kprintf("[display] backend=virtio-gpu %ux%u pitch=%u single-buffer\n",
                 (unsigned) dsp.width, (unsigned) dsp.height, (unsigned) dsp.pitch);
         return;
@@ -47,6 +54,7 @@ void display_init(void) {
         dsp.pitch           = (uint32_t) fb->pitch;
         dsp.double_buffered = 0;
         dsp.present         = limine_present;
+        dsp.present_rect    = NULL;   /* direct FB: partial present is free */
         kprintf("[display] backend=limine-fb %ux%u pitch=%u single-buffered\n",
                 (unsigned) dsp.width, (unsigned) dsp.height, (unsigned) dsp.pitch);
         return;
@@ -55,11 +63,24 @@ void display_init(void) {
     dsp.pixels          = NULL;
     dsp.double_buffered = 0;
     dsp.present         = limine_present;
+    dsp.present_rect    = NULL;
     kprintf("[display] no backend available\n");
 }
 
 const struct display *display_get(void) { return &dsp; }
 
 void display_present(void) {
+    if (dsp.present) dsp.present();
+}
+
+void display_present_rect(struct rect r) {
+    if (r.w <= 0 || r.h <= 0) return;
+    if (dsp.present_rect) {
+        dsp.present_rect(r);
+        return;
+    }
+    /* Backend with no partial-present (Limine FB direct writes — already
+     * visible). Fall back to a generic full present; safe because
+     * present() is a no-op for direct-write backends. */
     if (dsp.present) dsp.present();
 }
