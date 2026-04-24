@@ -152,24 +152,31 @@ void kmain(void) {
             compositor_add(s2);
             compositor_add(s3);
 
-            /* One-shot slide-in: s1 eases from offscreen to final pose
-             * with out-cubic, s2 drops in slightly with out-back, then
-             * everything settles. Only s3's alpha gently pulses so the
-             * demo isn't completely static; slow 6 s cycle reads as
-             * "breathing", not "jitter". */
+            /* Continuous ping-pong motion on all three so the damage
+             * tracker (Faz 12.5) has something to show. Every surface
+             * keeps moving/alpha-ing so the user sees the animation
+             * engine + damage tracker working on every frame. */
             struct anim *a_x  = anim_new();
             struct anim *a_y  = anim_new();
             struct anim *a_al = anim_new();
-            anim_ease(a_x, FX_FROM_INT(-320), FX_FROM_INT(80),
-                      FX_FROM_INT(1), EASE_OUT_CUBIC);
+
+            /* s1: horizontal sweep 80 ↔ 520, out-back each way (slight
+             * overshoot at ends). 2.5 s half-cycle. */
+            anim_ease(a_x, FX_FROM_INT(80), FX_FROM_INT(520),
+                      FX_FROM_INT(2) + (FX_ONE >> 1), EASE_OUT_BACK);
             anim_bind_i32(a_x, &s1->x, FX_ONE, 0, -400, 1200);
+            anim_set_loop(a_x, 1);
 
-            anim_ease(a_y, FX_FROM_INT(-240), FX_FROM_INT(160),
-                      FX_FROM_INT(1), EASE_OUT_BACK);
+            /* s2: vertical sweep 160 ↔ 400, in-out-cubic. 2 s half-cycle. */
+            anim_ease(a_y, FX_FROM_INT(160), FX_FROM_INT(400),
+                      FX_FROM_INT(2), EASE_IN_OUT_CUBIC);
             anim_bind_i32(a_y, &s2->y, FX_ONE, 0, -300, 700);
+            anim_set_loop(a_y, 1);
 
+            /* s3: alpha pulse 140 ↔ 230, 3 s half-cycle in-out-cubic —
+             * slower than motion so it reads as "breathing". */
             anim_ease(a_al, FX_FROM_INT(140), FX_FROM_INT(230),
-                      FX_FROM_INT(6), EASE_IN_OUT_CUBIC);
+                      FX_FROM_INT(3), EASE_IN_OUT_CUBIC);
             anim_bind_u8(a_al, &s3->alpha, FX_ONE, 0, 0, 255);
             anim_set_loop(a_al, 1);
         }
@@ -210,10 +217,12 @@ void kmain(void) {
     static struct thread bsp_thread;
     sched_init(&bsp_thread);
 
-    /* 60 Hz: matches typical QEMU/monitor host refresh, avoids
-     * 120 Hz guest × 60 Hz host buffer aliasing that showed up as
-     * "jitter" during motion. Real 120 Hz monitors can bump this. */
-    compositor_start(COMPOSITOR_DEFAULT_BG, 60);
+    /* 120 Hz compositor. Damage tracking (Faz 12.5) keeps each frame's
+     * transfer size bounded to the actual dirty rects, so the 120 Hz
+     * guest × 60 Hz host buffer aliasing that forced us to 60 Hz in
+     * Faz 12.4 is no longer bandwidth-dominated — the host only sees
+     * tiny sub-rect updates. */
+    compositor_start(COMPOSITOR_DEFAULT_BG, 120);
 
     spawn_user_demo();
 
