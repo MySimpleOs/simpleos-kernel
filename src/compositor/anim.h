@@ -18,7 +18,7 @@ typedef int32_t fx16;
 
 #define FX_ONE              (1 << 16)
 #define FX_HALF             (1 << 15)
-#define FX_FROM_INT(i)      ((fx16) ((int32_t)(i) << 16))
+#define FX_FROM_INT(i)      ((fx16) ((int32_t)(i) * FX_ONE))
 #define FX_FROM_MILLI(m)    ((fx16) (((int64_t)(m) * FX_ONE) / 1000))
 
 static inline int32_t FX_TO_INT_ROUND(fx16 f) {

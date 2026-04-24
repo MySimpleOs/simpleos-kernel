@@ -2,6 +2,7 @@
 #include "surface.h"
 #include "blit.h"
 #include "anim.h"
+#include "cursor.h"
 
 #include "../arch/x86_64/apic.h"
 #include "../gpu/display.h"
@@ -147,7 +148,13 @@ static void compositor_thread_body(void *arg) {
     uint64_t tsc_per_us = tsc_hz / 1000000ull;
     if (!tsc_per_us) tsc_per_us = 1;
 
-    fx16     dt_fx = fx_div(FX_ONE, FX_FROM_INT(thread_args.target_hz));
+    /* Measured dt keeps animation speed wall-clock-accurate even when
+     * frame times drift (virtio_gpu flushes, thread preemption). Start
+     * with the target step; the first real tick replaces it. */
+    uint64_t prev_tsc = rdtsc();
+    fx16     target_dt = fx_div(FX_ONE, FX_FROM_INT(thread_args.target_hz));
+    fx16     dt_cap    = target_dt * 2;
+    fx16     dt_fx     = target_dt;
 
     uint64_t next    = timer_ticks + fpt;
     uint32_t window_count = 0;
@@ -156,7 +163,20 @@ static void compositor_thread_body(void *arg) {
     for (;;) {
         while ((uint64_t) timer_ticks < next) thread_yield();
 
+        uint64_t frame_tsc = rdtsc();
+        {
+            uint64_t elapsed = frame_tsc - prev_tsc;
+            /* seconds * ONE = (cycles * ONE) / tsc_hz; cap at 2× target
+             * so a long stall doesn't teleport animations. */
+            fx16 measured = (fx16) ((elapsed * (uint64_t) FX_ONE) / tsc_hz);
+            if (measured <= 0)     measured = 1;
+            if (measured > dt_cap) measured = dt_cap;
+            dt_fx = measured;
+            prev_tsc = frame_tsc;
+        }
+
         anim_tick_all(dt_fx);
+        cursor_tick();
 
         uint64_t t0 = rdtsc();
         compositor_frame(thread_args.bg);

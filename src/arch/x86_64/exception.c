@@ -1,6 +1,7 @@
 #include "apic.h"
 
 #include "../../drivers/keyboard.h"
+#include "../../drivers/mouse.h"
 #include "../../kprintf.h"
 #include "../../panic.h"
 #include "../../sched/thread.h"
@@ -88,6 +89,12 @@ void interrupt_dispatch(struct interrupt_frame *frame) {
 
     if (frame->vector == KEYBOARD_VECTOR) {
         keyboard_handle_irq();
+        lapic_eoi();
+        return;
+    }
+
+    if (frame->vector == MOUSE_VECTOR) {
+        mouse_handle_irq();
         lapic_eoi();
         return;
     }
