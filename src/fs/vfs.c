@@ -1,4 +1,5 @@
 #include "vfs.h"
+#include "../arch/x86_64/serial.h"
 #include "../kprintf.h"
 #include "../mm/heap.h"
 
@@ -70,9 +71,18 @@ static const char *type_str(int t) {
     return t == VFS_DIR ? "dir" : t == VFS_FILE ? "file" : "?";
 }
 
+static void vfs_emit_indent(int depth) {
+    char sp[96];
+    int n = depth * 2;
+    if (n < 0) n = 0;
+    if (n > (int) sizeof(sp)) n = (int) sizeof(sp);
+    for (int i = 0; i < n; i++) sp[i] = ' ';
+    if (n > 0) serial_write(sp, (size_t) n);
+}
+
 void vfs_dump(const struct vnode *v, int depth) {
     if (!v) v = &root_node;
-    for (int i = 0; i < depth; i++) kprintf("  ");
+    vfs_emit_indent(depth);
     if (v->type == VFS_FILE) {
         kprintf("%s (file, %u bytes)\n", v->name, (unsigned) v->size);
     } else {

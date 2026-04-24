@@ -96,14 +96,8 @@ void smp_init(void) {
         __asm__ volatile ("pause");
     }
 
-    kprintf("[smp] %u CPU(s) online\n", (unsigned) cpu_count);
-    for (uint64_t i = 0; i < cpu_count; i++) {
-        kprintf("  cpu[%u] lapic=%u stack_top=%p%s\n",
-                (unsigned) cpus[i].cpu_id,
-                (unsigned) cpus[i].lapic_id,
-                (void *) cpus[i].kernel_stack_top,
-                cpus[i].lapic_id == bsp_lapic ? "  (BSP)" : "");
-    }
+    kprintf("[smp] %u CPU(s) online (BSP lapic=%u)\n",
+            (unsigned) cpu_count, (unsigned) bsp_lapic);
 }
 
 uint64_t smp_online_count(void) {

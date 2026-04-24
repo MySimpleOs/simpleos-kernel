@@ -64,6 +64,8 @@ void display_policy_init_defaults(void) {
     g_pol.label[6]   = 'y';
     g_pol.label[7]   = '\0';
     g_pol.pointer    = DISPLAY_POINTER_AUTO;
+    /* TSC pacing after present caps compositor thread CPU when damage is steady. */
+    g_pol.vsync      = 1;
     g_pol.from_file  = 0;
 }
 
@@ -127,6 +129,11 @@ int display_policy_parse(const char *buf, size_t len) {
             if (value_match(vs, vlen, "auto")) g_pol.pointer = DISPLAY_POINTER_AUTO;
             else if (value_match(vs, vlen, "ps2")) g_pol.pointer = DISPLAY_POINTER_PS2;
             else if (value_match(vs, vlen, "virtio")) g_pol.pointer = DISPLAY_POINTER_VIRTIO;
+            else if (value_match(vs, vlen, "usb")) g_pol.pointer = DISPLAY_POINTER_USB;
+            else return -1;
+        } else if (key_match(p, "vsync", 5)) {
+            if (value_match(vs, vlen, "0")) g_pol.vsync = 0;
+            else if (value_match(vs, vlen, "1")) g_pol.vsync = 1;
             else return -1;
         } else {
             /* unknown key — skip line for forward compatibility */
@@ -138,8 +145,11 @@ int display_policy_parse(const char *buf, size_t len) {
 static const char *policy_ptr_name(uint8_t p) {
     if (p == DISPLAY_POINTER_PS2) return "ps2";
     if (p == DISPLAY_POINTER_VIRTIO) return "virtio";
+    if (p == DISPLAY_POINTER_USB) return "usb";
     return "auto";
 }
+
+static const char *policy_vsync_name(uint8_t v) { return v ? "on" : "off"; }
 
 void display_policy_try_load_vfs(const char *path) {
     if (!path) return;
@@ -162,11 +172,12 @@ void display_policy_try_load_vfs(const char *path) {
         return;
     }
     g_pol.from_file = 1;
-    kprintf("[display] policy from %s: %ux%u @ %u Hz (%s) pointer=%s\n",
+    kprintf("[display] policy from %s: %ux%u @ %u Hz (%s) pointer=%s vsync=%s\n",
             path,
             (unsigned) g_pol.width, (unsigned) g_pol.height,
             (unsigned) g_pol.refresh_hz, g_pol.label,
-            policy_ptr_name(g_pol.pointer));
+            policy_ptr_name(g_pol.pointer),
+            policy_vsync_name(g_pol.vsync));
 }
 
 uint32_t display_policy_apic_timer_hz(void) {

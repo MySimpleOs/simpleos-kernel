@@ -37,6 +37,10 @@ void parallel_compose(struct blit_dst dst,
                       int surface_count,
                       uint32_t bg);
 
+/* Bump the compose epoch with zero bands so AP compositor workers do not
+ * spin forever when a frame has no damage (compositor_frame short-circuit). */
+void parallel_compose_idle_barrier(void);
+
 /* Cumulative stats (single-writer per CPU, read by BSP after barrier).
  * Useful for proving APs are actually doing work. */
 struct parallel_stats {

@@ -1,9 +1,12 @@
 #include "display.h"
 #include "display_policy.h"
 
+#include "../arch/x86_64/apic.h"
+#include "../drivers/mouse.h"
 #include "../kprintf.h"
 #include "../mm/heap.h"
 #include "../panic.h"
+#include "../sched/thread.h"
 
 #include <limine.h>
 #include <stdint.h>
@@ -13,22 +16,16 @@ extern volatile struct limine_framebuffer_request framebuffer_request;
 
 static struct display dsp;
 
-/* Software shadow buffer. Compose always writes here, never into the
- * host-visible framebuffer. Every present() publishes the shadow to
- * the hardware surface in one IRQ-off memcpy followed by sfence. This
- * guarantees the host-visible surface is only ever updated in a single
- * contiguous operation per frame — no CPU-midway-through-compose
- * tearing, regardless of what refresh thread QEMU (or real hardware)
- * runs underneath us.
+/* Software compositor back buffer. Compose writes here; present copies to
+ * the host-visible framebuffer (IRQ-off memcpy + sfence) so scanout
+ * never sees a half-updated frame.
  *
- * Faz 12.5.5: the virtio-gpu backend was removed. CPU-composited 2D
- * straight onto the Limine framebuffer is the permanent render model;
- * GPU shader paths are explicitly out of scope for the foreseeable
- * future (see ROADMAP "Grafik & kompozisyon katmanı"). */
-static uint32_t *shadow        = NULL;
-static uint32_t *hw_pixels     = NULL;    /* real front buffer             */
-static uint32_t  shadow_stride = 0;       /* pixels per row                */
-static uint32_t  hw_stride     = 0;
+ * Faz 12.5.5: Limine FB is the permanent CPU-composited 2D path (virtio-gpu
+ * backend removed). */
+static uint32_t *compos_buf     = NULL;
+static uint32_t *hw_pixels    = NULL;    /* real front buffer              */
+static uint32_t  compos_stride  = 0;       /* pixels per row (tight width)   */
+static uint32_t  hw_stride      = 0;
 
 /* Scoped interrupt disable. Publish MUST be atomic from the host-side
  * display's point of view: if the kernel thread driving the memcpy
@@ -71,36 +68,58 @@ static inline void row_copy_u32(uint32_t *dst, const uint32_t *src, uint32_t npx
 }
 
 static void limine_present(void) {
-    if (!shadow || !hw_pixels) return;
+    if (!compos_buf || !hw_pixels) return;
     const uint32_t h = dsp.height;
     const uint32_t w = dsp.width;
-    const uint32_t *sp = shadow;
+    const uint32_t *sp = compos_buf;
     uint32_t       *hp = hw_pixels;
     uint64_t flags = irq_save();
     for (uint32_t y = 0; y < h; y++) {
         row_copy_u32(hp, sp, w);
-        sp += shadow_stride;
+        sp += compos_stride;
         hp += hw_stride;
     }
     __asm__ volatile ("sfence" ::: "memory");
     irq_restore(flags);
 }
 
-static void limine_present_rect(struct rect r) {
-    if (!shadow || !hw_pixels) return;
-    if (r.w <= 0 || r.h <= 0) return;
-    int32_t x0 = r.x > 0 ? r.x : 0;
-    int32_t y0 = r.y > 0 ? r.y : 0;
-    int32_t x1 = r.x + r.w < (int32_t) dsp.width  ? r.x + r.w : (int32_t) dsp.width;
-    int32_t y1 = r.y + r.h < (int32_t) dsp.height ? r.y + r.h : (int32_t) dsp.height;
-    if (x1 <= x0 || y1 <= y0) return;
+static int limine_clamp_rect(struct rect r, int32_t *x0, int32_t *y0,
+                             int32_t *x1, int32_t *y1) {
+    if (!compos_buf || !hw_pixels) return 0;
+    if (r.w <= 0 || r.h <= 0) return 0;
+    *x0 = r.x > 0 ? r.x : 0;
+    *y0 = r.y > 0 ? r.y : 0;
+    *x1 = r.x + r.w < (int32_t) dsp.width  ? r.x + r.w : (int32_t) dsp.width;
+    *y1 = r.y + r.h < (int32_t) dsp.height ? r.y + r.h : (int32_t) dsp.height;
+    if (*x1 <= *x0 || *y1 <= *y0) return 0;
+    return 1;
+}
 
-    uint32_t rw    = (uint32_t) (x1 - x0);
-    uint64_t flags = irq_save();
+static void limine_present_rect_core(int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+    uint32_t rw = (uint32_t) (x1 - x0);
     for (int32_t y = y0; y < y1; y++) {
-        const uint32_t *sp = shadow    + (uint32_t) y * shadow_stride + (uint32_t) x0;
+        const uint32_t *sp = compos_buf + (uint32_t) y * compos_stride + (uint32_t) x0;
         uint32_t       *hp = hw_pixels + (uint32_t) y * hw_stride     + (uint32_t) x0;
         row_copy_u32(hp, sp, rw);
+    }
+}
+
+static void limine_present_rect(struct rect r) {
+    int32_t x0, y0, x1, y1;
+    if (!limine_clamp_rect(r, &x0, &y0, &x1, &y1)) return;
+    uint64_t flags = irq_save();
+    limine_present_rect_core(x0, y0, x1, y1);
+    __asm__ volatile ("sfence" ::: "memory");
+    irq_restore(flags);
+}
+
+void display_present_damage(const struct damage *dmg) {
+    if (!compos_buf || !hw_pixels || !dmg) return;
+    uint64_t flags = irq_save();
+    for (int i = 0; i < dmg->count; i++) {
+        int32_t x0, y0, x1, y1;
+        if (!limine_clamp_rect(dmg->rects[i], &x0, &y0, &x1, &y1)) continue;
+        limine_present_rect_core(x0, y0, x1, y1);
     }
     __asm__ volatile ("sfence" ::: "memory");
     irq_restore(flags);
@@ -139,15 +158,15 @@ void display_init(void) {
     uint32_t hw_pitch_bytes = (uint32_t) fb->pitch;
     hw_pixels     = (uint32_t *) fb->address;
     hw_stride     = hw_pitch_bytes / 4u;
-    shadow_stride = dsp.width;                       /* tight-packed shadow */
+    compos_stride = dsp.width;
 
     size_t bytes = (size_t) dsp.width * (size_t) dsp.height * 4u;
-    shadow = (uint32_t *) kmalloc(bytes);
-    if (!shadow) panic("display: shadow kmalloc failed");
-    for (size_t i = 0; i < (size_t) dsp.width * (size_t) dsp.height; i++) shadow[i] = 0;
+    compos_buf = (uint32_t *) kmalloc(bytes);
+    if (!compos_buf) panic("display: compositor buffer kmalloc failed");
+    for (size_t i = 0; i < (size_t) dsp.width * (size_t) dsp.height; i++) compos_buf[i] = 0;
 
-    dsp.pixels       = shadow;
-    /* Compositor indexes shadow rows as width pixels; do not use HW pitch here. */
+    dsp.pixels       = compos_buf;
+    /* Rows are width pixels; do not use HW pitch for compositor indexing. */
     dsp.pitch        = dsp.width * 4u;
     dsp.present      = limine_present;
     dsp.present_rect = limine_present_rect;
@@ -166,6 +185,8 @@ void display_init(void) {
         if (p->from_file && (p->width != dsp.width || p->height != dsp.height))
             kprintf("[display] note: compositor size clamped to scanout\n");
     }
+    if (dsp.width && dsp.height)
+        mouse_set_screen(dsp.width, dsp.height);
 }
 
 const struct display *display_get(void) { return &dsp; }
@@ -178,4 +199,32 @@ void display_present_rect(struct rect r) {
     if (r.w <= 0 || r.h <= 0) return;
     if (dsp.present_rect) { dsp.present_rect(r); return; }
     if (dsp.present)      { dsp.present(); }
+}
+
+static uint64_t vsync_next_tsc;
+
+void display_vsync_wait_after_present(void) {
+    const struct display_policy *pol = display_policy_get();
+    if (!pol->vsync || !tsc_hz) return;
+
+    uint32_t hz = pol->refresh_hz;
+    if (hz < 30) hz = 30;
+    if (hz > 360) hz = 360;
+    uint64_t per = tsc_hz / (uint64_t) hz;
+    if (per < 2000ull) per = 2000ull;
+
+    uint64_t now = rdtsc();
+    if (vsync_next_tsc == 0)
+        vsync_next_tsc = now + per;
+
+    while (now >= vsync_next_tsc)
+        vsync_next_tsc += per;
+
+    while (rdtsc() < vsync_next_tsc)
+        thread_yield();
+
+    vsync_next_tsc += per;
+    now = rdtsc();
+    while (now >= vsync_next_tsc)
+        vsync_next_tsc += per;
 }

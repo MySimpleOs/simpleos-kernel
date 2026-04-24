@@ -54,3 +54,6 @@ uint16_t pci_cfg_read16(const struct pci_device *dev, uint8_t offset);
 uint8_t  pci_cfg_read8 (const struct pci_device *dev, uint8_t offset);
 void     pci_cfg_write32(const struct pci_device *dev, uint8_t offset, uint32_t v);
 void     pci_cfg_write16(const struct pci_device *dev, uint8_t offset, uint16_t v);
+
+/* Set PCI COMMAND memory + bus-master bits (needed for USB DMA). */
+void pci_enable_mmio_bus_master(const struct pci_device *dev);

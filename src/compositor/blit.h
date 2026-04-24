@@ -11,6 +11,9 @@
  * destination — used by the damage tracker so each primitive paints only
  * inside the damage region for this frame. Pass NULL scissor to disable
  * (equivalent to the non-scissor variant).
+ *
+ * Rounded blits use an internal SDF corner mask in blit.c (same math as the
+ * old standalone header); only the ~2·cr top/bottom bands run the scalar path.
  */
 
 #include "rect.h"
@@ -59,12 +62,10 @@ void blit_alpha_scissor(const struct blit_dst *dst, const struct rect *scissor,
                         const struct blit_src *src, uint8_t global_alpha);
 
 /* Rounded-corner variants. `corner_radius` is in surface-local pixels;
- * passing 0 is equivalent to the non-rounded variant above. The function
- * uses the SDF corner mask defined in shadow.h — the interior stays on
- * the SIMD fast path (full opacity), only the corner bands pay the
- * per-pixel mask cost. The src buffer is assumed to cover the full
- * surface (src->width/height = surface size, stride = width); the
- * compositor's compose_band builds src exactly that way. */
+ * passing 0 is equivalent to the non-rounded variant above. The interior
+ * stays on the SIMD fast path; only the corner bands pay per-pixel mask cost.
+ * The src buffer is assumed to cover the full surface (src->width/height =
+ * surface size, stride = width); compose builds src that way. */
 void blit_copy_rounded_scissor(const struct blit_dst *dst,
                                const struct rect *scissor,
                                int32_t dx, int32_t dy,
@@ -77,17 +78,6 @@ void blit_alpha_rounded_scissor(const struct blit_dst *dst,
                                 const struct blit_src *src,
                                 uint8_t global_alpha,
                                 uint32_t corner_radius);
-
-/* Shadow composite. Draws a solid-color silhouette modulated by an 8-bit
- * alpha mask (`mask_pixels`, w=mask_w, h=mask_h, stride=mask_w) over the
- * destination, at absolute (dx, dy). `color` is XRGB (alpha bits
- * ignored); `global_alpha` scales the mask's opacity. */
-void blit_shadow_scissor(const struct blit_dst *dst,
-                         const struct rect *scissor,
-                         int32_t dx, int32_t dy,
-                         const uint8_t *mask_pixels,
-                         uint32_t mask_w, uint32_t mask_h,
-                         uint32_t color, uint8_t global_alpha);
 
 /* ---- SIMD row fast-paths (see compositor/blit_simd.c) ---------------------
  *

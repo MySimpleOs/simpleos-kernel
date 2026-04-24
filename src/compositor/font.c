@@ -121,16 +121,17 @@ static void *font_memcpy(void *d, const void *s, size_t n) {
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "../third_party/stb_truetype.h"
 
-extern const uint8_t font_noto_sans_start[];
-extern const uint8_t font_noto_sans_end[];
+extern const uint8_t font_roboto_start[];
 extern const uint8_t font_noto_symbols2_start[];
-extern const uint8_t font_noto_symbols2_end[];
+
+#define CE_KIND_SDF  0
+#define CE_KIND_GRAY 1
 
 #define FONT_PX           22
 #define FONT_SDF_PAD      4
-#define FONT_ONEDGE       180
+#define FONT_ONEDGE       188
 #define FONT_PDIST        36.0f
-#define FONT_SMOOTH       40.0f
+#define FONT_SMOOTH       26.0f
 #define FONT_CACHE_SLOTS  128
 
 static stbtt_fontinfo g_sans;
@@ -140,7 +141,8 @@ static float          g_scale;
 
 struct cache_entry {
     uint32_t         key;   /* codepoint | (font_id << 21) */
-    uint8_t         *sdf;
+    uint8_t         *buf;  /* SDF from stbtt_FreeSDF or gray bitmap from stbtt_FreeBitmap */
+    uint8_t          kind; /* CE_KIND_SDF or CE_KIND_GRAY */
     int              w, h, xoff, yoff;
 };
 
@@ -175,32 +177,18 @@ static int utf8_decode(const char **pp) {
     return (int) c;
 }
 
-static int glyph_empty(const stbtt_fontinfo *f, int glyph, float scale) {
-    int ix0, iy0, ix1, iy1;
-    stbtt_GetGlyphBitmapBox(f, glyph, scale, scale, &ix0, &iy0, &ix1, &iy1);
-    return ix0 == ix1 || iy0 == iy1;
-}
-
-static int likely_emoji_plane(int cp) {
-    if (cp >= 0x1f000 && cp <= 0x1ffff) return 1;
-    if (cp >= 0x2600 && cp <= 0x27bf) return 1;
-    return 0;
-}
-
-static int pick_font_id(int cp, float scale) {
+/* Prefer Roboto for all BMP text (incl. Turkish). Symbols2 only when the
+ * primary face has no glyph (e.g. dingbats, some emoji outlines in SMP). */
+static int pick_font_id(int cp) {
     int gs = stbtt_FindGlyphIndex(&g_sans, cp);
-    int empty_s = glyph_empty(&g_sans, gs, scale);
+    int gm = stbtt_FindGlyphIndex(&g_sym, cp);
 
-    if (likely_emoji_plane(cp)) {
-        int gm = stbtt_FindGlyphIndex(&g_sym, cp);
-        if (!glyph_empty(&g_sym, gm, scale)) return 1;
+    if (cp >= 0x10000) {
+        if (gm != 0) return 1;
         return 0;
     }
-    if (!empty_s) return 0;
-    {
-        int gm = stbtt_FindGlyphIndex(&g_sym, cp);
-        if (!glyph_empty(&g_sym, gm, scale)) return 1;
-    }
+    if (gs != 0) return 0;
+    if (gm != 0) return 1;
     return 0;
 }
 
@@ -212,14 +200,21 @@ static uint32_t cache_key(int cp, int fid) {
     return (uint32_t) cp | ((uint32_t) fid << 21);
 }
 
+static void free_cache_buf(struct cache_entry *e) {
+    if (!e || !e->buf) return;
+    if (e->kind == CE_KIND_GRAY)
+        stbtt_FreeBitmap(e->buf, NULL);
+    else
+        stbtt_FreeSDF(e->buf, NULL);
+    e->buf  = NULL;
+    e->kind = CE_KIND_SDF;
+}
+
 static void cache_evict_one(void) {
     size_t j = 0;
     for (size_t i = 1; i < FONT_CACHE_SLOTS; i++)
         if (g_cache[i].key < g_cache[j].key) j = i;
-    if (g_cache[j].sdf) {
-        stbtt_FreeSDF(g_cache[j].sdf, NULL);
-        g_cache[j].sdf = NULL;
-    }
+    free_cache_buf(&g_cache[j]);
     g_cache[j].key = 0;
 }
 
@@ -300,27 +295,39 @@ static void blend_font_px(uint32_t *dst, uint32_t fg, float a) {
 static int ensure_glyph(int cp, int fid, struct cache_entry **out) {
     uint32_t key = cache_key(cp, fid);
     struct cache_entry *e = cache_lookup(key);
-    if (e && e->sdf) {
+    if (e && e->buf) {
         *out = e;
         return 0;
     }
     e = cache_insert(key);
-    if (e->sdf) {
-        stbtt_FreeSDF(e->sdf, NULL);
-        e->sdf = NULL;
-    }
+    free_cache_buf(e);
+
     const stbtt_fontinfo *fi = font_info(fid);
     int w = 0, h = 0, xoff = 0, yoff = 0;
     unsigned char *sdf = stbtt_GetCodepointSDF((stbtt_fontinfo *) fi, g_scale, cp,
                                                 FONT_SDF_PAD, FONT_ONEDGE, FONT_PDIST,
                                                 &w, &h, &xoff, &yoff);
     if (!sdf || w <= 0 || h <= 0) {
-        e->key = 0;
-        *out = NULL;
-        return -1;
+        unsigned char *bm = stbtt_GetCodepointBitmap((stbtt_fontinfo *) fi, g_scale,
+                                                      g_scale, cp, &w, &h, &xoff, &yoff);
+        if (!bm || w <= 0 || h <= 0) {
+            e->key = 0;
+            *out = NULL;
+            return -1;
+        }
+        e->key   = key;
+        e->buf   = bm;
+        e->kind  = CE_KIND_GRAY;
+        e->w     = w;
+        e->h     = h;
+        e->xoff  = xoff;
+        e->yoff  = yoff;
+        *out = e;
+        return 0;
     }
     e->key   = key;
-    e->sdf   = sdf;
+    e->buf   = sdf;
+    e->kind  = CE_KIND_SDF;
     e->w     = w;
     e->h     = h;
     e->xoff  = xoff;
@@ -329,11 +336,11 @@ static int ensure_glyph(int cp, int fid, struct cache_entry **out) {
     return 0;
 }
 
-static void blit_sdf_glyph(struct surface *s, float xpen, int baseline,
-                           const struct cache_entry *ce, uint32_t fg) {
-    if (!s || !s->pixels || !ce || !ce->sdf) return;
+static void blit_glyph(struct surface *s, float xpen, int baseline,
+                       const struct cache_entry *ce, uint32_t fg) {
+    if (!s || !s->pixels || !ce || !ce->buf) return;
 
-    const uint8_t *d = ce->sdf;
+    const uint8_t *d = ce->buf;
     int w = ce->w, h = ce->h;
     int xoff = ce->xoff, yoff = ce->yoff;
 
@@ -352,11 +359,23 @@ static void blit_sdf_glyph(struct surface *s, float xpen, int baseline,
 
             float gx = (float) col + sub + 0.5f;
             float gy = (float) row + 0.5f;
-            /* Single-channel coverage (LCD triple sampling looks wrong on
-             * arbitrary gradients / non-RGB-linear backdrops). */
             float v = sdf_sample(d, w, h, gx, gy);
-            float a = smoothstep((float) FONT_ONEDGE - FONT_SMOOTH,
-                                 (float) FONT_ONEDGE + FONT_SMOOTH, v);
+            float a;
+            if (ce->kind == CE_KIND_GRAY) {
+                a = v * (1.0f / 255.0f);
+                if (a > 0.004f) {
+                    a *= 1.10f;
+                    if (a > 1.0f) a = 1.0f;
+                }
+            } else {
+                /* SDF distance field → coverage (tighter smooth band = darker crisper core). */
+                a = smoothstep((float) FONT_ONEDGE - FONT_SMOOTH,
+                               (float) FONT_ONEDGE + FONT_SMOOTH, v);
+                if (a > 0.02f) {
+                    a *= 1.06f;
+                    if (a > 1.0f) a = 1.0f;
+                }
+            }
             if (a <= 0.0f) continue;
 
             uint32_t *px = s->pixels + (uint32_t) sy * s->width + (uint32_t) sx;
@@ -367,12 +386,13 @@ static void blit_sdf_glyph(struct surface *s, float xpen, int baseline,
 
 int font_init(void) {
     for (int i = 0; i < FONT_CACHE_SLOTS; i++) {
-        g_cache[i].key = 0;
-        g_cache[i].sdf = NULL;
+        g_cache[i].key  = 0;
+        g_cache[i].buf  = NULL;
+        g_cache[i].kind = CE_KIND_SDF;
         g_cache[i].w = g_cache[i].h = 0;
         g_cache[i].xoff = g_cache[i].yoff = 0;
     }
-    if (!stbtt_InitFont(&g_sans, (unsigned char *) font_noto_sans_start, 0))
+    if (!stbtt_InitFont(&g_sans, (unsigned char *) font_roboto_start, 0))
         return -1;
     if (!stbtt_InitFont(&g_sym, (unsigned char *) font_noto_symbols2_start, 0))
         return -1;
@@ -384,10 +404,7 @@ int font_init(void) {
 
 void font_shutdown(void) {
     for (int i = 0; i < FONT_CACHE_SLOTS; i++) {
-        if (g_cache[i].sdf) {
-            stbtt_FreeSDF(g_cache[i].sdf, NULL);
-            g_cache[i].sdf = NULL;
-        }
+        free_cache_buf(&g_cache[i]);
         g_cache[i].key = 0;
     }
     g_ok = 0;
@@ -422,7 +439,7 @@ int font_draw_utf8(struct surface *s, int x, int y,
             continue;
         }
 
-        int fid = pick_font_id(cp, g_scale);
+        int fid = pick_font_id(cp);
         const stbtt_fontinfo *fi = font_info(fid);
 
         if (prev_cp >= 0 && fid == prev_fid) {
@@ -442,7 +459,7 @@ int font_draw_utf8(struct surface *s, int x, int y,
             continue;
         }
 
-        blit_sdf_glyph(s, xpen, baseline, ce, fg_argb);
+        blit_glyph(s, xpen, baseline, ce, fg_argb);
 
         {
             int ipen = (int) xpen;

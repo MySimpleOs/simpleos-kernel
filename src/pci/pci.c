@@ -137,20 +137,6 @@ static void probe_function(uint8_t bus, uint8_t slot, uint8_t func) {
     }
 }
 
-static const char *class_str(uint8_t c) {
-    switch (c) {
-        case 0x00: return "unclass";
-        case 0x01: return "storage";
-        case 0x02: return "network";
-        case 0x03: return "display";
-        case 0x04: return "multimedia";
-        case 0x05: return "memory";
-        case 0x06: return "bridge";
-        case 0x0C: return "serial-bus";
-        default:   return "other";
-    }
-}
-
 void pci_init(void) {
     device_count = 0;
 
@@ -168,14 +154,6 @@ void pci_init(void) {
     }
 
     kprintf("[pci] %u device(s) enumerated\n", (unsigned) device_count);
-    for (uint32_t i = 0; i < device_count; i++) {
-        struct pci_device *d = &devices[i];
-        kprintf("  %x:%x.%u  %04x:%04x  %s/%02x  hdr=%x\n",
-                (unsigned) d->bus, (unsigned) d->slot, (unsigned) d->func,
-                (unsigned) d->vendor_id, (unsigned) d->device_id,
-                class_str(d->class_code), (unsigned) d->subclass,
-                (unsigned) d->header_type);
-    }
 }
 
 struct pci_device *pci_find_class(uint8_t class_code, uint8_t subclass) {
@@ -201,4 +179,11 @@ struct pci_device *pci_find_id(uint16_t vendor, uint16_t device) {
 uint32_t pci_count(void)                  { return device_count; }
 struct pci_device *pci_at(uint32_t index) {
     return index < device_count ? &devices[index] : NULL;
+}
+
+void pci_enable_mmio_bus_master(const struct pci_device *dev) {
+    if (!dev) return;
+    uint16_t cmd = pci_cfg_read16(dev, 0x04);
+    cmd |= (1u << 1) | (1u << 2); /* memory space + bus master */
+    pci_cfg_write16(dev, 0x04, cmd);
 }

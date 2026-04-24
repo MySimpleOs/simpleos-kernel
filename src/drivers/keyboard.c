@@ -1,4 +1,5 @@
 #include "keyboard.h"
+#include "mouse.h"
 #include "../arch/x86_64/io.h"
 
 #include <stdint.h>
@@ -7,6 +8,7 @@
 #define PS2_DATA   0x60
 #define PS2_STATUS 0x64
 #define PS2_STATUS_OUTPUT_FULL 0x01
+#define PS2_STATUS_AUX         0x20
 
 /* Scan code set 1 — base (no shift) */
 static const char sc_base[128] = {
@@ -83,5 +85,12 @@ void keyboard_ps2_handle_byte(uint8_t sc) {
 }
 
 void keyboard_handle_irq(void) {
-    keyboard_ps2_handle_byte(inb(PS2_DATA));
+    while (inb(PS2_STATUS) & PS2_STATUS_OUTPUT_FULL) {
+        uint8_t st = inb(PS2_STATUS);
+        uint8_t b  = inb(PS2_DATA);
+        if (st & PS2_STATUS_AUX)
+            mouse_ps2_aux_byte(b);
+        else
+            keyboard_ps2_handle_byte(b);
+    }
 }

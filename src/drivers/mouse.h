@@ -2,13 +2,16 @@
 
 #include <stdint.h>
 
-/* PS/2 mouse driver.
+/* Pointer stack: virtio-tablet (QEMU), optional USB xHCI probe, PS/2 aux.
  *
- * Wired through the 8042 auxiliary port. IRQ 12 (GSI 12) delivers a
- * 3-byte packet on each motion or button event; the driver assembles
- * those bytes and maintains a cursor position in screen coordinates.
- * The compositor reads mouse_get_state() every frame to position the
- * cursor overlay surface.
+ * PS/2: IRQ 12 + polling. Standard 3-byte motion packets; IntelliMouse
+ * probe enables a 4th wheel byte — many laptop touchpads use this mode
+ * when routed through the legacy controller (I2C-only touchpads need a
+ * separate driver, not implemented here).
+ *
+ * Screen coords: relative deltas accumulate into [0 .. width-1] ×
+ * [0 .. height-1]; call mouse_set_screen() if the compositor resolution
+ * changes after boot.
  */
 
 #define MOUSE_VECTOR 0x2C
@@ -21,9 +24,13 @@ enum {
 };
 
 void mouse_init(uint32_t screen_w, uint32_t screen_h);
+void mouse_set_screen(uint32_t screen_w, uint32_t screen_h);
 /* Absolute pointer (virtio-tablet): replaces PS/2 deltas for this frame. */
 void mouse_absolute_inject(int32_t x, int32_t y, uint8_t buttons);
 void mouse_handle_irq(void);
+/* IRQ1 may see PS/2 aux-port bytes on the same controller; forward them here
+ * so they are not decoded as keyboard scan codes. */
+void mouse_ps2_aux_byte(uint8_t data);
 /* Drain PS/2 output (call from compositor each frame); fixes VBox when IRQ12
  * does not fire for every packet while data still appears in port 0x60. */
 void mouse_poll(void);

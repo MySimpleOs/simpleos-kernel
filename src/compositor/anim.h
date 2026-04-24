@@ -43,6 +43,7 @@ typedef enum {
     EASE_OUT_CUBIC,
     EASE_IN_OUT_CUBIC,
     EASE_OUT_BACK,
+    EASE_CUBIC_BEZIER,       /* CSS cubic-bezier(x1,y1,x2,y2); x in [0,1] */
 } anim_easing_t;
 
 typedef enum {
@@ -63,6 +64,7 @@ struct anim {
     fx16          stiffness;
     fx16          damping;
     anim_easing_t easing;
+    fx16          bez_x1, bez_y1, bez_x2, bez_y2; /* EASE_CUBIC_BEZIER only   */
 
     anim_bind_t   bind_kind;
     void         *bind_ptr;
@@ -85,6 +87,9 @@ void anim_spring(struct anim *a, fx16 from, fx16 to,
                  fx16 stiffness, fx16 damping);
 void anim_ease  (struct anim *a, fx16 from, fx16 to,
                  fx16 duration_s, anim_easing_t easing);
+/* CSS cubic-bezier(x1,y1,x2,y2) in Q16.16; x1/x2 clamped to [0, ONE]. */
+void anim_ease_bezier(struct anim *a, fx16 from, fx16 to, fx16 duration_s,
+                      fx16 x1, fx16 y1, fx16 x2, fx16 y2);
 
 /* Redirect an in-flight anim to a new target, preserving current value
  * and (for spring) velocity — the reason springs feel natural when the

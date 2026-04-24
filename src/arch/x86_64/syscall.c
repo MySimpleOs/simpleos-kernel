@@ -2,6 +2,7 @@
 #include "../../drivers/keyboard.h"
 #include "../../fs/vfs.h"
 #include "../../kprintf.h"
+#include "serial.h"
 #include "../../sched/thread.h"
 
 #include <stdint.h>
@@ -73,11 +74,8 @@ enum {
 
 static int64_t sys_write(int fd, const char *buf, size_t count) {
     if (fd != 1 && fd != 2) return -1;    /* only stdout/stderr for now      */
-    /* Serial log is the only visible stdout today — the on-screen console
-     * was removed with the Faz 3 test-pattern revert. */
-    for (size_t i = 0; i < count; i++) {
-        kprintf("%c", buf[i]);
-    }
+    if (!buf) return -1;
+    serial_write(buf, count);
     return (int64_t) count;
 }
 

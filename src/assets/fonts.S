@@ -3,11 +3,11 @@
 .section .rodata
 .balign 4
 
-.global font_noto_sans_start
-.global font_noto_sans_end
-font_noto_sans_start:
-    .incbin "NotoSans-Regular.ttf"
-font_noto_sans_end:
+.global font_roboto_start
+.global font_roboto_end
+font_roboto_start:
+    .incbin "Roboto-Regular.ttf"
+font_roboto_end:
 
 .balign 4
 .global font_noto_symbols2_start

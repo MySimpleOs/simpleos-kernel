@@ -51,9 +51,24 @@ void anim_ease(struct anim *a, fx16 from, fx16 to,
     a->target   = to;
     a->duration = duration_s > 0 ? duration_s : FX_ONE;
     a->easing   = easing;
+    a->bez_x1 = a->bez_y1 = a->bez_x2 = a->bez_y2 = 0;
     a->t        = 0;
     a->velocity = 0;
     a->done     = 0;
+}
+
+void anim_ease_bezier(struct anim *a, fx16 from, fx16 to, fx16 duration_s,
+                      fx16 x1, fx16 y1, fx16 x2, fx16 y2) {
+    if (!a) return;
+    anim_ease(a, from, to, duration_s, EASE_CUBIC_BEZIER);
+    if (x1 < 0) x1 = 0;
+    if (x1 > FX_ONE) x1 = FX_ONE;
+    if (x2 < 0) x2 = 0;
+    if (x2 > FX_ONE) x2 = FX_ONE;
+    a->bez_x1 = x1;
+    a->bez_y1 = y1;
+    a->bez_x2 = x2;
+    a->bez_y2 = y2;
 }
 
 void anim_retarget(struct anim *a, fx16 new_target) {
@@ -130,13 +145,43 @@ static fx16 ease_out_back(fx16 t) {
     return FX_ONE + fx_mul(c1, u3) + fx_mul(c3, u2);
 }
 
-static fx16 apply_ease(anim_easing_t e, fx16 t) {
-    switch (e) {
+/* Unit cubic Bezier with P0=0, P3=1 on the given axis (P1.p, P2.p). */
+static fx16 cubic_bezier_axis(fx16 t, fx16 p1, fx16 p2) {
+    fx16 om = FX_ONE - t;
+    fx16 t2 = fx_mul(t, t);
+    fx16 om2 = fx_mul(om, om);
+    fx16 c3 = FX_FROM_INT(3);
+    fx16 a = fx_mul(c3, fx_mul(fx_mul(om2, t), p1));
+    fx16 b = fx_mul(c3, fx_mul(fx_mul(om, t2), p2));
+    return a + b + fx_mul(t2, t);
+}
+
+/* Given eased progress u in [0,ONE], find t with x(t)≈u (monotone for x1,x2 in unit). */
+static fx16 ease_param_for_x(fx16 u, fx16 x1, fx16 x2) {
+    if (u <= 0) return 0;
+    if (u >= FX_ONE) return FX_ONE;
+    fx16 lo = 0, hi = FX_ONE;
+    for (int i = 0; i < 24; i++) {
+        fx16 mid = (fx16) (((int64_t) lo + (int64_t) hi) >> 1);
+        if (cubic_bezier_axis(mid, x1, x2) < u)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    return hi;
+}
+
+static fx16 apply_ease(struct anim *a, fx16 t) {
+    switch (a->easing) {
     case EASE_LINEAR:       return ease_linear(t);
     case EASE_IN_CUBIC:     return ease_in_cubic(t);
     case EASE_OUT_CUBIC:    return ease_out_cubic(t);
     case EASE_IN_OUT_CUBIC: return ease_in_out_cubic(t);
     case EASE_OUT_BACK:     return ease_out_back(t);
+    case EASE_CUBIC_BEZIER: {
+        fx16 tt = ease_param_for_x(t, a->bez_x1, a->bez_x2);
+        return cubic_bezier_axis(tt, a->bez_y1, a->bez_y2);
+    }
     }
     return t;
 }
@@ -170,7 +215,7 @@ static void step_ease(struct anim *a, fx16 dt) {
         a->t    = FX_ONE;
         a->done = 1;
     }
-    fx16 k     = apply_ease(a->easing, a->t);
+    fx16 k     = apply_ease(a, a->t);
     fx16 delta = a->target - a->from;
     a->current = a->from + fx_mul(k, delta);
 }

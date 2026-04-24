@@ -1,9 +1,5 @@
-/* SimpleOS kernel entry — Faz 3 framebuffer + Faz 4.1 serial bring-up.
- *
- * Draws a test pattern on the framebuffer so the Limine handoff is visible
- * at a glance, then logs boot details over COM1 serial and halts. The
- * serial log is the primary debug channel from here on.
- */
+/* SimpleOS kernel entry — Limine framebuffer, display server bootstrap,
+ * compositor (black desktop until clients submit surfaces), scheduler. */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -20,13 +16,9 @@
 #include "arch/x86_64/simd.h"
 #include "arch/x86_64/smp.h"
 #include "arch/x86_64/syscall.h"
-#include "compositor/anim.h"
 #include "compositor/compositor.h"
-#include "compositor/font.h"
-#include "compositor/path.h"
 #include "compositor/cursor.h"
-#include "compositor/gradient.h"
-#include "compositor/surface.h"
+#include "desktop/simple_desktop.h"
 #include "drivers/keyboard.h"
 #include "drivers/mouse.h"
 #include "fs/initrd.h"
@@ -34,7 +26,10 @@
 #include "fs/vfs.h"
 #include "gpu/display.h"
 #include "gpu/display_policy.h"
+#include "gpu/display_server.h"
+#include "input/input_routing.h"
 #include "pci/pci.h"
+#include "wm/window_manager.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
 #include "mm/vmm.h"
@@ -64,14 +59,8 @@ static void idle(void) {
 extern const uint8_t userdemo_start[];
 extern const uint8_t userdemo_end[];
 
-/* Map 320×240 design → surface; scale×8 + half-bias avoids collapsed
- * integer control points (jagged / “cut” fills on small surfaces). */
-static int32_t demo_scx(uint32_t sw, int32_t x) {
-    return (int32_t) (((int64_t) x * (int64_t) sw * 8 + 1280) / 2560);
-}
-static int32_t demo_scy(uint32_t sh, int32_t y) {
-    return (int32_t) (((int64_t) y * (int64_t) sh * 8 + 960) / 1920);
-}
+/* Opaque black desktop (ARGB); compositor clears damage rects to this. */
+#define BOOT_DESKTOP_BG 0xff000000u
 
 static void spawn_user_demo(void) {
     uint64_t blob_size = (uint64_t) (userdemo_end - userdemo_start);
@@ -139,13 +128,9 @@ void kmain(void) {
 
     pci_init();
 
-    /* Heap before display so display_init() can kmalloc its software
-     * shadow buffer. Only pmm + active VMM (Limine-installed page
-     * tables) are needed, both live by this point. */
+    /* Heap before display so display_init() can kmalloc the compositor
+     * back buffer. Only pmm + active VMM (Limine page tables) are needed. */
     heap_init();
-
-    if (font_init() != 0)
-        kprintf("[boot] font_init failed (missing assets/*.ttf?)\n");
 
     display_policy_init_defaults();
     vfs_init();
@@ -156,139 +141,13 @@ void kmain(void) {
 
     display_init();
 
-    /* Faz 12.3 demo: three overlapping surfaces animated by the spring
-     * + easing engine. s1.x springs back and forth, s2.y eases with
-     * out-back bounce, s3.alpha pulses with a linear loop. The compositor
-     * thread's tick_all(dt) advances these every frame before blitting. */
     compositor_init();
-    {
-        const struct display *ddev = display_get();
-        uint32_t dw = (ddev && ddev->width)  ? ddev->width  : 1024u;
-        uint32_t dh = (ddev && ddev->height) ? ddev->height : 768u;
-
-        uint32_t mrg = dw / 25u;
-        if (mrg < 8u)  mrg = 8u;
-        if (mrg > 40u) mrg = 40u;
-
-        uint32_t sw = (dw > 3u * mrg) ? (dw - 3u * mrg) / 3u : dw / 3u;
-        if (sw < 160u && dw > 40u) sw = dw - 40u;
-        if (sw > 420u) sw = 420u;
-        if (sw < 120u) sw = (dw > 20u) ? dw - 20u : 120u;
-
-        uint32_t sh = dh * 28u / 100u;
-        if (sh < 120u) sh = (dh > 30u) ? dh - 30u : 120u;
-        if (sh > 300u) sh = 300u;
-
-        struct surface *s1 = surface_create("red",   sw, sh);
-        struct surface *s2 = surface_create("green", sw, sh);
-        struct surface *s3 = surface_create("blue",  sw, sh);
-        if (s1 && s2 && s3) {
-            int32_t swm = (int32_t) sw - 1, shm = (int32_t) sh - 1;
-            if (swm < 1) swm = 1;
-            if (shm < 1) shm = 1;
-
-            gradient_fill_linear(s1, 0xffe03a3a, 0xffffaa20,
-                                 0, 0, swm, shm);
-
-            int32_t rcx = (int32_t) (sw / 2u), rcy = (int32_t) (sh / 2u);
-            int32_t rad = (int32_t) ((sw + sh) / 4u);
-            if (rad < 40) rad = 40;
-            gradient_fill_radial(s2, 0xe060ff80, 0x8015602a,
-                                 rcx, rcy, rad);
-
-            {
-                path_t *pv = path_create();
-                if (pv) {
-                    path_move_to(pv, demo_scx(sw, 30),  demo_scy(sh, 40));
-                    path_cubic_to(pv, demo_scx(sw, 90),  demo_scy(sh, 15),
-                                  demo_scx(sw, 150), demo_scy(sh, 130),
-                                  demo_scx(sw, 120), demo_scy(sh, 200));
-                    path_quad_to(pv,  demo_scx(sw, 60),  demo_scy(sh, 210),
-                                  demo_scx(sw, 25),  demo_scy(sh, 150));
-                    path_line_to(pv,  demo_scx(sw, 25),  demo_scy(sh, 70));
-                    path_close(pv);
-                    path_stroke_surface(s2, pv, 3, 0xdd204060);
-                    path_fill_surface(s2, pv, 0xc0fff8e8);
-                    path_destroy(pv);
-                }
-            }
-
-            gradient_fill_linear(s3, 0xaa1a3080, 0xaa60c0ff,
-                                 rcx, shm, rcx, 0);
-
-            uint32_t cr = sw / 12u;
-            if (cr > 24u) cr = 24u;
-            if (cr < 4u)  cr = 4u;
-            surface_set_corner_radius(s1, cr);
-            surface_set_corner_radius(s2, cr);
-            surface_set_corner_radius(s3, cr);
-            surface_set_shadow(s1,  6,  6, 16, 0x000000, 180);
-            surface_set_shadow(s2,  6,  6, 16, 0x000000, 180);
-            surface_set_shadow(s3,  6,  6, 16, 0x000000, 180);
-
-            int32_t x1 = (int32_t) mrg;
-            int32_t x2 = (int32_t) (mrg + sw + mrg);
-            int32_t x3 = (int32_t) dw - (int32_t) mrg - (int32_t) sw;
-            if (x3 < x2 + (int32_t) (sw / 4u)) {
-                x3 = x2 + (int32_t) (sw / 4u);
-                if (x3 + (int32_t) sw > (int32_t) dw)
-                    x3 = (int32_t) dw - (int32_t) sw - (int32_t) mrg;
-            }
-
-            int32_t y1 = (int32_t) (dh / 10u);
-            int32_t y2 = (int32_t) (dh / 6u);
-            int32_t y3 = (int32_t) (dh / 5u);
-            if (y1 + (int32_t) sh > (int32_t) dh) y1 = (int32_t) dh - (int32_t) sh - 8;
-            if (y2 + (int32_t) sh > (int32_t) dh) y2 = (int32_t) dh - (int32_t) sh - 8;
-            if (y3 + (int32_t) sh > (int32_t) dh) y3 = (int32_t) dh - (int32_t) sh - 8;
-
-            surface_move(s1, x1, y1); surface_set_z(s1, 0);
-            surface_move(s2, x2, y2); surface_set_z(s2, 1);
-            surface_move(s3, x3, y3); surface_set_z(s3, 2);
-            compositor_add(s1);
-            compositor_add(s2);
-            compositor_add(s3);
-
-            struct anim *a_x  = anim_new();
-            struct anim *a_y  = anim_new();
-            struct anim *a_al = anim_new();
-
-            int32_t xa0 = x1;
-            int32_t xa1 = (int32_t) dw - (int32_t) sw - (int32_t) mrg;
-            if (xa1 <= xa0) xa1 = xa0 + 40;
-            anim_ease(a_x, FX_FROM_INT(xa0), FX_FROM_INT(xa1),
-                      FX_FROM_INT(2) + (FX_ONE >> 1), EASE_OUT_BACK);
-            anim_bind_i32(a_x, &s1->x, FX_ONE, 0, xa0 - 400, xa1 + 400);
-            anim_set_loop(a_x, 1);
-
-            int32_t ya0 = y2;
-            int32_t ya1 = (int32_t) dh - (int32_t) sh - (int32_t) mrg;
-            if (ya1 <= ya0) ya1 = ya0 + 40;
-            anim_ease(a_y, FX_FROM_INT(ya0), FX_FROM_INT(ya1),
-                      FX_FROM_INT(2), EASE_IN_OUT_CUBIC);
-            anim_bind_i32(a_y, &s2->y, FX_ONE, 0, ya0 - 300, ya1 + 300);
-            anim_set_loop(a_y, 1);
-
-            /* s3: alpha pulse 140 ↔ 230, 3 s half-cycle in-out-cubic —
-             * slower than motion so it reads as "breathing". */
-            anim_ease(a_al, FX_FROM_INT(140), FX_FROM_INT(230),
-                      FX_FROM_INT(3), EASE_IN_OUT_CUBIC);
-            anim_bind_u8(a_al, &s3->alpha, FX_ONE, 0, 0, 255);
-            anim_set_loop(a_al, 1);
-
-            /* UTF-8 + SDF text (Noto Sans + Symbols2; see scripts/fetch-google-fonts.sh). */
-            if (s1) {
-                static const char k_font_demo[] =
-                    "SimpleOS "
-                    "\xc4\x9f\xc3\xbc\xc5\x9f\xc3\xb6\xc3\xa7\xc4\xb1 " /* ğüşöçı */
-                    "\xf0\x9f\x98\x80 "                                  /* U+1F600 */
-                    "\xe2\x98\xba";                                     /* U+263A */
-                font_draw_utf8(s1, 12, 18, k_font_demo, 0xffffffffu);
-            }
-        }
-    }
-    compositor_frame(COMPOSITOR_DEFAULT_BG);
-    kprintf("[boot] compositor demo painted (3 surfaces)\n");
+    wm_init();
+    input_routing_init();
+    display_server_init();
+    simple_desktop_init();
+    compositor_frame(BOOT_DESKTOP_BG);
+    kprintf("[boot] desktop + dock ready (click blue dock tile for demo terminal)\n");
 
     vfs_dump(NULL, 0);
 
@@ -306,6 +165,10 @@ void kmain(void) {
     }
     ioapic_set_irq(MOUSE_GSI, MOUSE_VECTOR, 0);
     cursor_init();
+    /* First compositor_frame ran before the cursor surface existed; repaint
+     * once so the pointer is visible without waiting for the compositor thread. */
+    compositor_mark_full_damage();
+    compositor_frame(BOOT_DESKTOP_BG);
 
     smp_init();
 
@@ -318,7 +181,8 @@ void kmain(void) {
     sched_init(&bsp_thread);
 
     /* Target frame rate from /etc/display.conf (refresh_hz), capped. */
-    compositor_start(COMPOSITOR_DEFAULT_BG, display_policy_compositor_hz());
+    compositor_start(BOOT_DESKTOP_BG, display_policy_compositor_hz());
+    simple_desktop_start_poller();
 
     spawn_user_demo();
 

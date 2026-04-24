@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* ---- integer sqrt — shared copy so gradient doesn't need shadow.c ------ */
+/* ---- integer sqrt (gradient-local; blit.c has its own for corner AA) -- */
 static uint32_t isqrt_u32(uint32_t x) {
     uint32_t r = 0;
     uint32_t bit = 1u << 30;
@@ -95,8 +95,7 @@ void gradient_fill_radial(struct surface *s,
         return;
     }
 
-    /* d16 = sqrt(dx²+dy²) scaled by 16 (matches shadow_corner_mask's
-     * fixed point). Then t = (d16 * 256) / (radius*16) = d16*16/radius. */
+    /* d16 = sqrt(dx²+dy²) scaled by 16 (same scale as blit corner AA). */
     uint32_t r16 = radius * 16u;
     for (int32_t y = 0; y < h; y++) {
         uint32_t *row = s->pixels + (size_t) y * w;

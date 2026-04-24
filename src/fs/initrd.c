@@ -22,12 +22,6 @@ int initrd_init(void) {
 
     for (uint64_t i = 0; i < module_request.response->module_count; i++) {
         struct limine_file *m = module_request.response->modules[i];
-        kprintf("[initrd] module[%u] path=%s size=%u addr=%p\n",
-                (unsigned) i,
-                m->path ? m->path : "(null)",
-                (unsigned) m->size,
-                m->address);
-
         if (i == 0) {
             /* Limine already hands module files back as HHDM-virtual
              * pointers (unlike rsdp_request.response->address, which is
@@ -38,7 +32,12 @@ int initrd_init(void) {
     }
 
     if (bytes) {
-        kprintf("[initrd] mounted at %p (%u bytes)\n", bytes, (unsigned) len);
+        struct limine_file *m0 = module_request.response->modules[0];
+        kprintf("[initrd] module[0] path=%s size=%u addr=%p (mounted %u bytes)\n",
+                m0->path ? m0->path : "(null)",
+                (unsigned) m0->size,
+                m0->address,
+                (unsigned) len);
         return 0;
     }
     return 1;

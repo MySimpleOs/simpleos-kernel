@@ -36,11 +36,7 @@ static volatile int parallel_barrier_active;
 
 /* Compose one band: for each damage rect, intersect with band, clear
  * bg, then blit every surface that overlaps the intersection (z-sorted
- * bottom-to-top). Per surface the order is shadow → surface body, so
- * content lands on top of its own halo; surface N's shadow still goes
- * underneath surface N+1 because z-sort enforces it. Band → rect
- * intersection keeps the scissor tight so we never touch pixels outside
- * damage. */
+ * bottom-to-top). Band ∩ rect keeps the scissor tight. */
 static void compose_band(uint32_t band_idx) {
     if (band_idx >= ctx.band_count) return;
     struct rect band = ctx.bands[band_idx];
@@ -55,27 +51,6 @@ static void compose_band(uint32_t band_idx) {
             struct surface *s = ctx.z_sorted[i];
             if (!s || !s->pixels)                    continue;
             if (!s->visible || s->alpha == 0)        continue;
-
-            /* Shadow pass — lays down the blurred silhouette first so
-             * the surface body paints on top of it. Cheap to skip when
-             * there's no shadow or the shadow rect misses the sub. */
-            if (s->shadow_blur && s->shadow_alpha && s->shadow_mask) {
-                int32_t shx = s->x + s->shadow_ox - (int32_t) s->shadow_blur;
-                int32_t shy = s->y + s->shadow_oy - (int32_t) s->shadow_blur;
-                struct rect shadow_rect = rect_make(shx, shy,
-                                                    (int32_t) s->shadow_mask_w,
-                                                    (int32_t) s->shadow_mask_h);
-                uint8_t ga_shadow = (uint8_t)
-                    ((uint32_t) s->shadow_alpha * s->alpha / 255u);
-                if (rect_overlaps(&shadow_rect, &sub)) {
-                    blit_shadow_scissor(&ctx.dst, &sub, shx, shy,
-                                        s->shadow_mask,
-                                        s->shadow_mask_w,
-                                        s->shadow_mask_h,
-                                        s->shadow_color,
-                                        ga_shadow);
-                }
-            }
 
             struct rect srect = rect_make(s->x, s->y,
                                           (int32_t) s->width,
@@ -134,6 +109,37 @@ void compositor_ap_worker(uint32_t cpu_id) {
 
 int parallel_compose_active(void) {
     return __atomic_load_n(&parallel_barrier_active, __ATOMIC_ACQUIRE);
+}
+
+void parallel_compose_idle_barrier(void) {
+    uint64_t cpus = smp_online_count();
+    if (cpus < 1) cpus = 1;
+    if (hypervisor_is_virtualbox())
+        cpus = 1;
+    uint64_t n_aps = cpus > 0 ? cpus - 1 : 0;
+
+    ctx.band_count     = 0;
+    ctx.dmg            = NULL;
+    ctx.z_sorted       = NULL;
+    ctx.surface_count  = 0;
+    __atomic_store_n(&ctx.next_tile,  1, __ATOMIC_RELAXED);
+    __atomic_store_n(&ctx.done_count, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&parallel_barrier_active, 1, __ATOMIC_RELEASE);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    __atomic_add_fetch(&ctx.epoch, 1, __ATOMIC_ACQ_REL);
+
+    /* compose_band(0) returns immediately when band_count == 0 */
+    compose_band(0);
+    for (;;) {
+        uint32_t t = __atomic_fetch_add(&ctx.next_tile, 1, __ATOMIC_RELAXED);
+        if (t >= ctx.band_count) break;
+        compose_band(t);
+    }
+
+    while (__atomic_load_n(&ctx.done_count, __ATOMIC_ACQUIRE) < n_aps)
+        __asm__ volatile ("pause");
+
+    __atomic_store_n(&parallel_barrier_active, 0, __ATOMIC_RELEASE);
 }
 
 void parallel_compose(struct blit_dst dst,

@@ -41,7 +41,7 @@ LDFLAGS     := -nostdlib -static --no-dynamic-linker \
 
 KERNEL_ELF  := $(BUILD_DIR)/simpleos.elf
 
-FONT_ASSETS := $(CURDIR)/assets/NotoSans-Regular.ttf \
+FONT_ASSETS := $(CURDIR)/assets/Roboto-Regular.ttf \
                $(CURDIR)/assets/NotoSansSymbols2-Regular.ttf
 
 CURSOR_INC   := $(SRC)/assets/cursor_default.inc

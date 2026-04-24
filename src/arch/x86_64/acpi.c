@@ -161,6 +161,7 @@ void acpi_init(void) {
     size_t entry_count = (root->length - sizeof(struct sdt_header)) / entry_size;
     uint8_t *entries   = (uint8_t *) (root + 1);
 
+    int madt_found = 0;
     for (size_t i = 0; i < entry_count; i++) {
         uint64_t phys;
         if (use_xsdt) {
@@ -172,13 +173,18 @@ void acpi_init(void) {
         table = (struct sdt_header *) map_phys(phys, table->length);
         if (sig_equals(table->signature, "APIC", 4)) {
             parse_madt((struct madt_header *) table);
-            kprintf("[acpi] MADT: lapic=0x%x ioapic=0x%x (gsi=%u) cpus=%u\n",
-                    (unsigned) acpi.lapic_phys,
-                    (unsigned) acpi.ioapic_phys,
-                    (unsigned) acpi.ioapic_gsi_base,
-                    (unsigned) acpi.lapic_count);
-            return;
+            madt_found = 1;
+            break;
         }
+    }
+
+    if (madt_found) {
+        kprintf("[acpi] MADT: lapic=0x%x ioapic=0x%x (gsi=%u) cpus=%u\n",
+                (unsigned) acpi.lapic_phys,
+                (unsigned) acpi.ioapic_phys,
+                (unsigned) acpi.ioapic_gsi_base,
+                (unsigned) acpi.lapic_count);
+        return;
     }
 
     kprintf("[acpi] MADT not found — using default LAPIC/IOAPIC addresses\n");

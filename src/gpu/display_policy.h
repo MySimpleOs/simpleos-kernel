@@ -3,9 +3,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define DISPLAY_POINTER_AUTO    0u /* try virtio-tablet, else PS/2 */
+#define DISPLAY_POINTER_AUTO    0u /* virtio → USB probe → PS/2 */
 #define DISPLAY_POINTER_PS2     1u
 #define DISPLAY_POINTER_VIRTIO  2u /* require virtio-tablet (QEMU) */
+#define DISPLAY_POINTER_USB     3u /* prefer xHCI USB (stub → PS/2) */
 
 /* Monitor policy: width/height (logical compositor size), refresh_hz, label.
  * Loaded from /etc/display.conf when initrd is mounted before display_init().
@@ -18,6 +19,7 @@ struct display_policy {
     uint32_t refresh_hz;   /* nominal refresh (e.g. 60)                 */
     char     label[48];    /* short name, e.g. "primary"                */
     uint8_t  pointer;      /* DISPLAY_POINTER_*                         */
+    uint8_t  vsync;        /* 1: after present, TSC-wait ~1/refresh_hz   */
     int      from_file;    /* 1 if last load came from VFS              */
 };
 

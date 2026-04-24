@@ -3,8 +3,8 @@
 /* Gradient fill helpers. Both variants write straight into s->pixels (the
  * surface's ARGB8888 content buffer) and mark the surface dirty, so the
  * compositor's next frame picks them up through the normal blit path —
- * no special-case rendering, no extra state. Corner rounding and shadow
- * come from the surface; gradients just paint the interior.
+ * no special-case rendering, no extra state. Corner rounding comes from
+ * the surface blit path; gradients just paint the interior.
  *
  * Colors are ARGB8888 (A in bits 24..31). Per-channel linear interpolation
  * runs in 16-bit integer math; no floats. `t` is implicitly clamped to
