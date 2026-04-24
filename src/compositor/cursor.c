@@ -11,9 +11,10 @@
  * shadow. Hotspot at the tip (CUR_HOT_X, CUR_HOT_Y) so screen (mx,my)
  * matches the pointed pixel after offset. */
 
-#define CUR_SZ      36
-#define CUR_HOT_X   3
-#define CUR_HOT_Y   3
+#define CUR_SZ       36
+#define CUR_LOGIC    32 /* supersampled arrow fits in 32×32 after hotspot */
+#define CUR_HOT_X    3
+#define CUR_HOT_Y    3
 static int64_t cross2(int ax, int ay, int bx, int by) {
     return (int64_t) ax * (int64_t) by - (int64_t) ay * (int64_t) bx;
 }
@@ -95,7 +96,7 @@ void cursor_init(void) {
             }
             int ix = x - CUR_HOT_X;
             int iy = y - CUR_HOT_Y;
-            if (ix >= 32 || iy >= 32) {
+            if (ix >= CUR_LOGIC || iy >= CUR_LOGIC) {
                 ba[y * CUR_SZ + x] = 0;
                 continue;
             }

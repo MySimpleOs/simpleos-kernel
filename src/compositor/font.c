@@ -130,7 +130,6 @@ extern const uint8_t font_noto_symbols2_end[];
 #define FONT_SDF_PAD      5
 #define FONT_ONEDGE       180
 #define FONT_PDIST        36.0f
-#define FONT_LCD_SHIFT    (1.0f / 3.0f)
 #define FONT_SMOOTH       40.0f
 #define FONT_CACHE_SLOTS  128
 
@@ -354,21 +353,15 @@ static void blit_sdf_glyph(struct surface *s, float xpen, int baseline,
 
             float gx = (float) col + sub + 0.5f;
             float gy = (float) row + 0.5f;
-            float vr = sdf_sample(d, w, h, gx - FONT_LCD_SHIFT, gy);
-            float vg = sdf_sample(d, w, h, gx, gy);
-            float vb = sdf_sample(d, w, h, gx + FONT_LCD_SHIFT, gy);
-
-            float ar = smoothstep((float) FONT_ONEDGE - FONT_SMOOTH,
-                                  (float) FONT_ONEDGE + FONT_SMOOTH, vr);
-            float ag = smoothstep((float) FONT_ONEDGE - FONT_SMOOTH,
-                                  (float) FONT_ONEDGE + FONT_SMOOTH, vg);
-            float ab = smoothstep((float) FONT_ONEDGE - FONT_SMOOTH,
-                                  (float) FONT_ONEDGE + FONT_SMOOTH, vb);
-
-            if (ar <= 0.0f && ag <= 0.0f && ab <= 0.0f) continue;
+            /* Single-channel coverage (LCD triple sampling looks wrong on
+             * arbitrary gradients / non-RGB-linear backdrops). */
+            float v = sdf_sample(d, w, h, gx, gy);
+            float a = smoothstep((float) FONT_ONEDGE - FONT_SMOOTH,
+                                 (float) FONT_ONEDGE + FONT_SMOOTH, v);
+            if (a <= 0.0f) continue;
 
             uint32_t *px = s->pixels + (uint32_t) sy * s->width + (uint32_t) sx;
-            blend_lcd_px(px, fg, ar, ag, ab);
+            blend_lcd_px(px, fg, a, a, a);
         }
     }
 }

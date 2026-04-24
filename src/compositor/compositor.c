@@ -167,7 +167,7 @@ void compositor_frame(uint32_t bg_xrgb) {
         .pixels = dd->pixels,
         .width  = dd->width,
         .height = dd->height,
-        .stride = dd->pitch / 4u,
+        .stride = dd->width, /* shadow buffer: tight rows (see display_init pitch) */
     };
     struct rect screen = rect_make(0, 0,
                                    (int32_t) dd->width, (int32_t) dd->height);

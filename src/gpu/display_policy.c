@@ -39,9 +39,10 @@ static int parse_u32(const char *s, uint32_t *out) {
 }
 
 void display_policy_init_defaults(void) {
-    g_pol.width      = 2560;
-    g_pol.height     = 1440;
-    g_pol.refresh_hz = 185;
+    /* Defaults match common laptop / VirtualBox GOP modes until /etc/display.conf loads. */
+    g_pol.width      = 1920;
+    g_pol.height     = 1080;
+    g_pol.refresh_hz = 60;
     g_pol.label[0]   = 'p';
     g_pol.label[1]   = 'r';
     g_pol.label[2]   = 'i';

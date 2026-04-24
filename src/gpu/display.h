@@ -13,8 +13,10 @@
  * rep-movsq memcpy + sfence. The shadow-then-publish model is what
  * kept moving surfaces tear-free at 120 Hz (Faz 12.5.4).
  *
- * Pixel format: 32-bit XRGB (little-endian: B G R X bytes). Pitch is in
- * bytes; stride in pixels is pitch / 4. */
+ * Pixel format: 32-bit XRGB (little-endian: B G R X bytes).
+ * `pitch` is bytes per row of `pixels` (the shadow buffer), i.e. width*4;
+ * the hardware framebuffer may have a larger stride — that is internal
+ * to display.c for present(). Compositor stride in pixels is pitch/4. */
 struct display {
     uint32_t *pixels;
     uint32_t  width;

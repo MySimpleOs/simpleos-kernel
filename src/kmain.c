@@ -64,6 +64,14 @@ static void idle(void) {
 extern const uint8_t userdemo_start[];
 extern const uint8_t userdemo_end[];
 
+/* Map demo art from 320×240 design coordinates to actual surface size. */
+static int32_t demo_scx(uint32_t sw, int32_t x) {
+    return (int32_t) (((int64_t) x * (int64_t) sw + 160) / 320);
+}
+static int32_t demo_scy(uint32_t sh, int32_t y) {
+    return (int32_t) (((int64_t) y * (int64_t) sh + 120) / 240);
+}
+
 static void spawn_user_demo(void) {
     uint64_t blob_size = (uint64_t) (userdemo_end - userdemo_start);
 
@@ -146,73 +154,111 @@ void kmain(void) {
      * thread's tick_all(dt) advances these every frame before blitting. */
     compositor_init();
     {
-        struct surface *s1 = surface_create("red",   320, 240);
-        struct surface *s2 = surface_create("green", 320, 240);
-        struct surface *s3 = surface_create("blue",  320, 240);
+        const struct display *ddev = display_get();
+        uint32_t dw = (ddev && ddev->width)  ? ddev->width  : 1024u;
+        uint32_t dh = (ddev && ddev->height) ? ddev->height : 768u;
+
+        uint32_t mrg = dw / 25u;
+        if (mrg < 8u)  mrg = 8u;
+        if (mrg > 40u) mrg = 40u;
+
+        uint32_t sw = (dw > 3u * mrg) ? (dw - 3u * mrg) / 3u : dw / 3u;
+        if (sw < 160u && dw > 40u) sw = dw - 40u;
+        if (sw > 420u) sw = 420u;
+        if (sw < 120u) sw = (dw > 20u) ? dw - 20u : 120u;
+
+        uint32_t sh = dh * 28u / 100u;
+        if (sh < 120u) sh = (dh > 30u) ? dh - 30u : 120u;
+        if (sh > 300u) sh = 300u;
+
+        struct surface *s1 = surface_create("red",   sw, sh);
+        struct surface *s2 = surface_create("green", sw, sh);
+        struct surface *s3 = surface_create("blue",  sw, sh);
         if (s1 && s2 && s3) {
-            /* s1: linear gradient (deep red → warm orange), solid-opaque
-             * so the interior hits the SIMD copy fast path. */
+            int32_t swm = (int32_t) sw - 1, shm = (int32_t) sh - 1;
+            if (swm < 1) swm = 1;
+            if (shm < 1) shm = 1;
+
             gradient_fill_linear(s1, 0xffe03a3a, 0xffffaa20,
-                                 0, 0, 319, 239);
-            /* s2: radial gradient (bright green core → forest edge),
-             * semi-transparent to exercise the alpha path. */
+                                 0, 0, swm, shm);
+
+            int32_t rcx = (int32_t) (sw / 2u), rcy = (int32_t) (sh / 2u);
+            int32_t rad = (int32_t) ((sw + sh) / 4u);
+            if (rad < 40) rad = 40;
             gradient_fill_radial(s2, 0xe060ff80, 0x8015602a,
-                                 160, 120, 180);
-            /* Vector paths: cubic + quadratic + close, AA fill + stroke. */
+                                 rcx, rcy, rad);
+
             {
                 path_t *pv = path_create();
                 if (pv) {
-                    path_move_to(pv, 30,  40);
-                    path_cubic_to(pv, 90,  15, 150, 130, 120, 200);
-                    path_quad_to(pv,  60, 210, 25,  150);
-                    path_line_to(pv,  25,  70);
+                    path_move_to(pv, demo_scx(sw, 30),  demo_scy(sh, 40));
+                    path_cubic_to(pv, demo_scx(sw, 90),  demo_scy(sh, 15),
+                                  demo_scx(sw, 150), demo_scy(sh, 130),
+                                  demo_scx(sw, 120), demo_scy(sh, 200));
+                    path_quad_to(pv,  demo_scx(sw, 60),  demo_scy(sh, 210),
+                                  demo_scx(sw, 25),  demo_scy(sh, 150));
+                    path_line_to(pv,  demo_scx(sw, 25),  demo_scy(sh, 70));
                     path_close(pv);
                     path_stroke_surface(s2, pv, 3, 0xdd204060);
                     path_fill_surface(s2, pv, 0xc0fff8e8);
                     path_destroy(pv);
                 }
             }
-            /* s3: linear gradient bottom → top (navy → sky), transparent
-             * for alpha blending. */
-            gradient_fill_linear(s3, 0xaa1a3080, 0xaa60c0ff,
-                                 160, 239, 160, 0);
 
-            /* All three surfaces get the Faz 12.7 treatment: 24-px
-             * rounded corners and a soft drop shadow offset 6 px down
-             * and to the right with a 16-px gaussian-ish blur. */
-            surface_set_corner_radius(s1, 24);
-            surface_set_corner_radius(s2, 24);
-            surface_set_corner_radius(s3, 24);
+            gradient_fill_linear(s3, 0xaa1a3080, 0xaa60c0ff,
+                                 rcx, shm, rcx, 0);
+
+            uint32_t cr = sw / 12u;
+            if (cr > 24u) cr = 24u;
+            if (cr < 4u)  cr = 4u;
+            surface_set_corner_radius(s1, cr);
+            surface_set_corner_radius(s2, cr);
+            surface_set_corner_radius(s3, cr);
             surface_set_shadow(s1,  6,  6, 16, 0x000000, 180);
             surface_set_shadow(s2,  6,  6, 16, 0x000000, 180);
             surface_set_shadow(s3,  6,  6, 16, 0x000000, 180);
 
-            surface_move(s1,  80,  80); surface_set_z(s1, 0);
-            surface_move(s2, 260, 160); surface_set_z(s2, 1);
-            surface_move(s3, 440, 240); surface_set_z(s3, 2);
+            int32_t x1 = (int32_t) mrg;
+            int32_t x2 = (int32_t) (mrg + sw + mrg);
+            int32_t x3 = (int32_t) dw - (int32_t) mrg - (int32_t) sw;
+            if (x3 < x2 + (int32_t) (sw / 4u)) {
+                x3 = x2 + (int32_t) (sw / 4u);
+                if (x3 + (int32_t) sw > (int32_t) dw)
+                    x3 = (int32_t) dw - (int32_t) sw - (int32_t) mrg;
+            }
+
+            int32_t y1 = (int32_t) (dh / 10u);
+            int32_t y2 = (int32_t) (dh / 6u);
+            int32_t y3 = (int32_t) (dh / 5u);
+            if (y1 + (int32_t) sh > (int32_t) dh) y1 = (int32_t) dh - (int32_t) sh - 8;
+            if (y2 + (int32_t) sh > (int32_t) dh) y2 = (int32_t) dh - (int32_t) sh - 8;
+            if (y3 + (int32_t) sh > (int32_t) dh) y3 = (int32_t) dh - (int32_t) sh - 8;
+
+            surface_move(s1, x1, y1); surface_set_z(s1, 0);
+            surface_move(s2, x2, y2); surface_set_z(s2, 1);
+            surface_move(s3, x3, y3); surface_set_z(s3, 2);
             compositor_add(s1);
             compositor_add(s2);
             compositor_add(s3);
 
-            /* Continuous ping-pong motion on all three so the damage
-             * tracker (Faz 12.5) has something to show. Every surface
-             * keeps moving/alpha-ing so the user sees the animation
-             * engine + damage tracker working on every frame. */
             struct anim *a_x  = anim_new();
             struct anim *a_y  = anim_new();
             struct anim *a_al = anim_new();
 
-            /* s1: horizontal sweep 80 ↔ 520, out-back each way (slight
-             * overshoot at ends). 2.5 s half-cycle. */
-            anim_ease(a_x, FX_FROM_INT(80), FX_FROM_INT(520),
+            int32_t xa0 = x1;
+            int32_t xa1 = (int32_t) dw - (int32_t) sw - (int32_t) mrg;
+            if (xa1 <= xa0) xa1 = xa0 + 40;
+            anim_ease(a_x, FX_FROM_INT(xa0), FX_FROM_INT(xa1),
                       FX_FROM_INT(2) + (FX_ONE >> 1), EASE_OUT_BACK);
-            anim_bind_i32(a_x, &s1->x, FX_ONE, 0, -400, 1200);
+            anim_bind_i32(a_x, &s1->x, FX_ONE, 0, xa0 - 400, xa1 + 400);
             anim_set_loop(a_x, 1);
 
-            /* s2: vertical sweep 160 ↔ 400, in-out-cubic. 2 s half-cycle. */
-            anim_ease(a_y, FX_FROM_INT(160), FX_FROM_INT(400),
+            int32_t ya0 = y2;
+            int32_t ya1 = (int32_t) dh - (int32_t) sh - (int32_t) mrg;
+            if (ya1 <= ya0) ya1 = ya0 + 40;
+            anim_ease(a_y, FX_FROM_INT(ya0), FX_FROM_INT(ya1),
                       FX_FROM_INT(2), EASE_IN_OUT_CUBIC);
-            anim_bind_i32(a_y, &s2->y, FX_ONE, 0, -300, 700);
+            anim_bind_i32(a_y, &s2->y, FX_ONE, 0, ya0 - 300, ya1 + 300);
             anim_set_loop(a_y, 1);
 
             /* s3: alpha pulse 140 ↔ 230, 3 s half-cycle in-out-cubic —

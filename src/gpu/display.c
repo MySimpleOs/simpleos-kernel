@@ -119,11 +119,11 @@ void display_init(void) {
     struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
     dsp.width  = (uint32_t) fb->width;
     dsp.height = (uint32_t) fb->height;
-    dsp.pitch  = (uint32_t) fb->pitch;
 
+    uint32_t hw_pitch_bytes = (uint32_t) fb->pitch;
     hw_pixels     = (uint32_t *) fb->address;
-    hw_stride     = dsp.pitch / 4u;
-    shadow_stride = dsp.width;                       /* tight-packed        */
+    hw_stride     = hw_pitch_bytes / 4u;
+    shadow_stride = dsp.width;                       /* tight-packed shadow */
 
     size_t bytes = (size_t) dsp.width * (size_t) dsp.height * 4u;
     shadow = (uint32_t *) kmalloc(bytes);
@@ -131,14 +131,19 @@ void display_init(void) {
     for (size_t i = 0; i < (size_t) dsp.width * (size_t) dsp.height; i++) shadow[i] = 0;
 
     dsp.pixels       = shadow;
+    /* Compositor indexes shadow rows as width pixels; do not use HW pitch here. */
+    dsp.pitch        = dsp.width * 4u;
     dsp.present      = limine_present;
     dsp.present_rect = limine_present_rect;
 
     display_policy_init_defaults();
     {
         const struct display_policy *p = display_policy_get();
-        kprintf("[display] limine-fb %ux%u pitch=%u shadow-buffered\n",
-                (unsigned) dsp.width, (unsigned) dsp.height, (unsigned) dsp.pitch);
+        kprintf("[display] limine-fb %ux%u hw_pitch=%u shadow %ux%u row=%u bytes\n",
+                (unsigned) dsp.width, (unsigned) dsp.height,
+                (unsigned) hw_pitch_bytes,
+                (unsigned) dsp.width, (unsigned) dsp.height,
+                (unsigned) dsp.pitch);
         kprintf("[display] nominal policy %ux%u @ %u Hz (%s) — physical %ux%u\n",
                 (unsigned) p->width, (unsigned) p->height,
                 (unsigned) p->refresh_hz, p->label,
