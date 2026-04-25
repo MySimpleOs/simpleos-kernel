@@ -18,6 +18,7 @@
 #include "arch/x86_64/syscall.h"
 #include "compositor/compositor.h"
 #include "compositor/cursor.h"
+#include "desktop/boot_input_hint.h"
 #include "desktop/simple_desktop.h"
 #include "drivers/keyboard.h"
 #include "drivers/mouse.h"
@@ -162,6 +163,10 @@ void kmain(void) {
 
     ioapic_init();
     keyboard_init();
+    /* USB/xHCI enumeration can take seconds on real hardware; paint once first
+     * so the desktop is visible instead of a black screen until mouse_init returns. */
+    compositor_mark_full_damage();
+    compositor_frame(boot_desktop_bg);
     {
         uint8_t apic_dest = lapic_current_id();
         ioapic_set_irq(KEYBOARD_GSI, KEYBOARD_VECTOR, apic_dest);
@@ -171,6 +176,7 @@ void kmain(void) {
         mouse_init(dd ? dd->width : 0, dd ? dd->height : 0);
         ioapic_set_irq(MOUSE_GSI, MOUSE_VECTOR, apic_dest);
     }
+    boot_input_hint_show();
     /* Cursor before first paint so frame 1 includes the pointer (was: late until
      * second compositor_frame after smp). */
     cursor_init();
@@ -187,6 +193,7 @@ void kmain(void) {
      * BSP into it once sti happens in idle(). */
     static struct thread bsp_thread;
     sched_init(&bsp_thread);
+    mouse_start_background_probe();
 
     /* Target frame rate from /etc/display.conf (refresh_hz), capped. */
     compositor_start(boot_desktop_bg, display_policy_compositor_hz());

@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-#define PCI_MAX_DEVICES 64
+#define PCI_MAX_DEVICES 96
 #define PCI_BAR_COUNT   6
 
 enum {

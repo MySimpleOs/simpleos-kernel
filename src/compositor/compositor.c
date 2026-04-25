@@ -8,6 +8,7 @@
 
 #include "../arch/x86_64/apic.h"
 #include "../arch/x86_64/smp.h"
+#include "../desktop/boot_input_hint.h"
 #include "../gpu/display.h"
 #include "../kprintf.h"
 #include "../sched/thread.h"
@@ -351,6 +352,7 @@ static void compositor_thread_body(void *arg) {
 
         anim_tick_all(dt_fx);
         cursor_tick();
+        boot_input_hint_tick();
 
         uint64_t t0 = rdtsc();
         compositor_frame(thread_args.bg);

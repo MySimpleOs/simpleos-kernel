@@ -7,6 +7,7 @@
 #define DISPLAY_POINTER_PS2     1u
 #define DISPLAY_POINTER_VIRTIO  2u /* require virtio-tablet (QEMU) */
 #define DISPLAY_POINTER_USB     3u /* prefer xHCI USB (stub → PS/2) */
+#define DISPLAY_POINTER_I2C     4u /* Intel LPSS + HID-over-I2C only (touchpad) */
 
 /* Monitor policy: width/height (logical compositor size), refresh_hz, label.
  * Loaded from /etc/display.conf when initrd is mounted before display_init().
